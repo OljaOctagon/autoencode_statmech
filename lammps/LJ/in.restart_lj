@@ -1,0 +1,17 @@
+read_restart in.restart_lj${start_time}
+
+neighbor 1.0 bin
+neigh_modify check yes delay 0 every 1 
+
+# 5) Run
+restart 1000000 lj.restart
+fix 2 all npt temp 2.0 2.0 1.0 iso 5 5 1000
+# fix mynve all nve
+# fix mylgv all langevin 1.0 0.1 0.1 1530917
+
+dump           trajdump   all atom 10000 trajectory.lammpstrj
+dump_modify    trajdump   sort id    pbc yes
+
+timestep 0.005
+run ${end_time}
+
