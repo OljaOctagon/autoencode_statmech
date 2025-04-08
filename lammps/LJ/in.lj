@@ -23,23 +23,26 @@ minimize 1.0e-4 1.0e-6 1000 10000
 
 # PART B - MOLECULAR DYNAMICS
 # 4) Visualization
-thermo 1000
-# Write out and visualization
-thermo_style custom step temp pe vol 
-
+thermo 5000
 variable tot_pe equal pe 
 variable tot_vol  equal vol 
 variable tot_density equal density 
-
 thermo_style custom step step temp pe vol density
 
-fix myfile all ave/time 1000 1 1000 v_tot_pe v_tot_vol v_tot_density file av_config_observables.dat
+fix myfile all ave/time 10000 1 10000 v_tot_pe v_tot_vol v_tot_density file av_config_observables.dat
+
+compute orient all orientorder/atom degrees 8 1 2 3 4 5 6 7 8 nnn NULL cutoff 1.5
+compute poteng all pe/atom
+dump           qdump all custom 10000 steinhardt.dat  id c_poteng c_orient[1] c_orient[2] c_orient[3] c_orient[4] c_orient[5] c_orient[6] c_orient[7] c_orient[8]
+dump_modify    qdump sort id pbc yes
+
+
+compute Q6 all reduce ave c_orient[6]
+fix 3 all ave/time 10000 1 10000 c_Q6 file q6.dat 
 
 # 5) Run
 restart 1000000 lj.restart
-fix 2 all npt temp 2.0 2.0 1.0 iso 7 7 1000
-# fix mynve all nve
-# fix mylgv all langevin 1.0 0.1 0.1 1530917
+fix 2 all npt temp 2.0 2.0 1.0 iso 10 10 1000
 
 dump           trajdump   all atom 10000 trajectory.lammpstrj
 dump_modify    trajdump   sort id    pbc yes
