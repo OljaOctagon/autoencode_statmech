@@ -1,6 +1,9 @@
 import numpy as np 
 import gzip 
 from pathlib import Path
+import numba 
+from scipy.spatial.distance import squareform
+
 
 def read_traj(t):
     Nskip = 9 
@@ -77,6 +80,8 @@ def read_bop(t,Natoms):
                         q8 = whole_line[9]
                         BOP[-1].append(np.array([E_perpart,q1,q2,q3,q4,q5,q6,q7,q8])) 
 
+
+
                     frame_nr_old = frame_nr
             except EOFError as er:
                 print(er)
@@ -87,3 +92,50 @@ def read_bop(t,Natoms):
              
     BOP = np.array(BOP)
     return BOP
+
+
+@numba.njit(fastmath=True, parallel=False)
+def distances(frame_i, Lbox):
+    lx_box = Lbox
+    ly_box = Lbox
+    lz_box = Lbox
+
+    dist_norm = []    
+    for i, ipos in enumerate(frame_i):
+        for j, jpos in enumerate(frame_i):
+            if j>i: 
+                dist = ipos - jpos
+                
+                dx = dist[0]
+                dy = dist[1]
+                dz = dist[2]
+                
+                sign_dx = np.sign(dx)
+                sign_dy = np.sign(dy)
+                sign_dy = np.sign(dz)
+                
+                # pbc only for x and y 
+                dx = sign_dx*(min(np.fabs(dx),lx_box-np.fabs(dx)))
+                dy = sign_dy*(min(np.fabs(dy),ly_box-np.fabs(dy)))
+                dz = sign_dy*(min(np.fabs(dz),lz_box-np.fabs(dz)))
+
+                dist_ij = np.sqrt(np.power(dx*dx+dy*dy+dz*dz,2))
+                dist_norm.append(dist_ij)
+                
+    return dist_norm
+    
+
+def neighbours(sq_dist, cutoff):
+    b = np.where((sq_dist<cutoff) & (sq_dist>0.01))
+    neighbour_list = [[b[0][i],b[1][i]] for i in range(len(b[0]))]
+    return neighbour_list
+
+def nextN_neighbours(Natoms, sq_dist,nn):
+    NextN = np.zeros((int(Natoms),int(nn)))
+    for i in range(int(Natoms)):
+        NextN[i] = np.sort(sq_dist[i])[1:(nn+1)]
+
+    return NextN
+    
+
+        

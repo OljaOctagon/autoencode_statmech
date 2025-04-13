@@ -25,7 +25,7 @@ fix 4 all ave/time 10000 1 10000 c_Press file virial_pressure.dat
 
 # 5) Run
 restart 1000000 lj.restart
-fix 2 all npt temp 2.0 2.0 1.0 iso 11 11 1000
+fix 2 all npt temp 2.0 2.0 1.0 iso 11 11 5000
 
 dump           trajdump all atom 10000 trajectory.lammpstrj
 dump_modify    trajdump sort id pbc yes
