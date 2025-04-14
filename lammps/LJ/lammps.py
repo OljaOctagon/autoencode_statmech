@@ -119,11 +119,43 @@ def distances(frame_i, Lbox):
                 dy = sign_dy*(min(np.fabs(dy),ly_box-np.fabs(dy)))
                 dz = sign_dy*(min(np.fabs(dz),lz_box-np.fabs(dz)))
 
-                dist_ij = np.sqrt(np.power(dx*dx+dy*dy+dz*dz,2))
+                dist_ij = np.sqrt(dx*dx+dy*dy+dz*dz)
                 dist_norm.append(dist_ij)
                 
     return dist_norm
     
+    
+@numba.njit(fastmath=True, parallel=False)
+def vector_squareform_distances(frame_i, Lbox):
+    lx_box = Lbox
+    ly_box = Lbox
+    lz_box = Lbox
+
+    dist_norm = [] 
+    vdist = []   
+    for i, ipos in enumerate(frame_i):
+        for j, jpos in enumerate(frame_i):
+                dist = ipos - jpos
+                
+                dx = dist[0]
+                dy = dist[1]
+                dz = dist[2]
+                
+                sign_dx = np.sign(dx)
+                sign_dy = np.sign(dy)
+                sign_dy = np.sign(dz)
+                
+                # pbc only for x and y 
+                dx = sign_dx*(min(np.fabs(dx),lx_box-np.fabs(dx)))
+                dy = sign_dy*(min(np.fabs(dy),ly_box-np.fabs(dy)))
+                dz = sign_dy*(min(np.fabs(dz),lz_box-np.fabs(dz)))
+
+                dist_ij = np.sqrt(dx*dx+dy*dy+dz*dz)
+                dist_norm.append(dist_ij)    
+                vdist.append([dx,dy,dz])
+                          
+    return dist_norm, vdist
+      
 
 def neighbours(sq_dist, cutoff):
     b = np.where((sq_dist<cutoff) & (sq_dist>0.01))
@@ -137,5 +169,11 @@ def nextN_neighbours(Natoms, sq_dist,nn):
 
     return NextN
     
+def nextN_neighbours_vector(Natoms, sq_dist, vec_dist, nn):
+    NextN = np.zeros((int(Natoms),int(nn),3))
+    for i in range(int(Natoms)):
+        idx = np.argsort(sq_dist[i])[1:(nn+1)]
+        NextN[i] = vec_dist[i][idx]
 
+    return NextN
         
