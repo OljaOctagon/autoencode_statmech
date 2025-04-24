@@ -12,15 +12,17 @@ def read_traj(t):
     Box = []
     frame_nr_old = -1 
     mfile = Path(t)
+    Natoms = 0 
     if mfile.is_file():
         with open(t, "r") as traj_file:
-            Natoms = 1000
             try: 
                 for i,line in enumerate(traj_file):
                     modulo = i % (Nskip+Natoms)
                     frame_nr = i // (Nskip+Natoms)
                     if frame_nr != frame_nr_old:
                         Config.append([])
+                        Box.append([])
+                        
                     if modulo == 3:
                         Natoms = np.array(line.split()).astype(float)[0]
 
@@ -28,9 +30,23 @@ def read_traj(t):
                         whole_line = np.array(line.split()).astype(float)
                         Lstart = whole_line[0]
                         Lend = whole_line[1]
-                        L = Lend - Lstart
-                        Box.append(L) 
-
+                        Lx = Lend - Lstart
+                        Box[-1].extend([Lx])
+                        
+                    if modulo == 6:
+                        whole_line = np.array(line.split()).astype(float)
+                        Lstart = whole_line[0]
+                        Lend = whole_line[1]
+                        Ly = Lend - Lstart
+                        Box[-1].extend([Ly])
+                        
+                    if modulo == 7:
+                        whole_line = np.array(line.split()).astype(float)
+                        Lstart = whole_line[0]
+                        Lend = whole_line[1]
+                        Lz = Lend - Lstart
+                        Box[-1].extend([Lz])
+                    
 
                     if modulo >=Nskip:
                         whole_line = np.array(line.split()).astype(float)
@@ -69,18 +85,7 @@ def read_bop(t,Natoms):
                     
                     if modulo >=Nskip:
                         whole_line = np.array(line.split()).astype(float)
-                        E_perpart = whole_line[1]
-                        q1 = whole_line[2]
-                        q2 = whole_line[3] 
-                        q3 = whole_line[4]
-                        q4 = whole_line[5]
-                        q5 = whole_line[6]
-                        q6 = whole_line[7] 
-                        q7 = whole_line[8] 
-                        q8 = whole_line[9]
-                        BOP[-1].append(np.array([E_perpart,q1,q2,q3,q4,q5,q6,q7,q8])) 
-
-
+                        BOP[-1].append(np.array(whole_line[1:]))
 
                     frame_nr_old = frame_nr
             except EOFError as er:
@@ -95,11 +100,12 @@ def read_bop(t,Natoms):
 
 
 @numba.njit(fastmath=True, parallel=False)
-def distances(frame_i, Lbox):
-    lx_box = Lbox
-    ly_box = Lbox
-    lz_box = Lbox
-
+def distances(frame_i, Box):
+    
+    lx_box = Box[0]
+    ly_box = Box[1]
+    lz_box = Box[2]
+    
     dist_norm = []    
     for i, ipos in enumerate(frame_i):
         for j, jpos in enumerate(frame_i):
@@ -126,11 +132,12 @@ def distances(frame_i, Lbox):
     
     
 @numba.njit(fastmath=True, parallel=False)
-def vector_squareform_distances(frame_i, Lbox):
-    lx_box = Lbox
-    ly_box = Lbox
-    lz_box = Lbox
-
+def vector_squareform_distances(frame_i, Box):
+    
+    lx_box = Box[0]
+    ly_box = Box[1]
+    lz_box = Box[2]
+    
     dist_norm = [] 
     vdist = []   
     for i, ipos in enumerate(frame_i):
