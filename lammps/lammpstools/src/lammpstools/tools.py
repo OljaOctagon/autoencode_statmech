@@ -70,6 +70,75 @@ def read_traj(t):
     Config = np.array(Config)
     return Natoms, Config, Box 
 
+
+def read_mag2patch(t):
+    Nskip = 9 
+    
+    Config = []
+    Box = []
+    frame_nr_old = -1 
+    mfile = Path(t)
+    Natoms = 0 
+    if mfile.is_file():
+        try: 
+            with open(t, "r") as traj_file:
+           
+                for i,line in enumerate(traj_file):
+                    modulo = i % (Nskip+Natoms)
+                    frame_nr = i // (Nskip+Natoms)
+                    if frame_nr != frame_nr_old:
+                        Config.append([])
+                        Box.append([])
+                        
+                    if modulo == 3:
+                        Natoms = np.array(line.split()).astype(float)[0]
+
+                    if modulo == 5:
+                        whole_line = np.array(line.split()).astype(float)
+                        Lstart = whole_line[0]
+                        Lend = whole_line[1]
+                        Lx = Lend - Lstart
+                        Box[-1].extend([Lx])
+                        
+                    if modulo == 6:
+                        whole_line = np.array(line.split()).astype(float)
+                        Lstart = whole_line[0]
+                        Lend = whole_line[1]
+                        Ly = Lend - Lstart
+                        Box[-1].extend([Ly])
+                        
+                    if modulo == 7:
+                        whole_line = np.array(line.split()).astype(float)
+                        Lstart = whole_line[0]
+                        Lend = whole_line[1]
+                        Lz = Lend - Lstart
+                        Box[-1].extend([Lz])
+                    
+
+                    if modulo >=Nskip:
+                        if whole_line[1] == 1:
+                            whole_line = np.array(line.split()).astype(float)
+                            x = whole_line[2]
+                            y = whole_line[3]
+                            z = whole_line[4] 
+
+                            Config[-1].append(np.array([x,y,z])) 
+
+                    frame_nr_old = frame_nr
+                    
+        except (EOFError, IndexError, ValueError) as er:
+            print("Caught error in {}:".format(t), er) 
+    
+        
+        if Config:
+            if len(Config[-1])!=Natoms:
+                del Config[-1]
+                del Box[-1]
+
+    Config = np.array(Config)
+    return Natoms, Config, Box 
+
+
 def read_bop(t,Natoms):
     Nskip = 9 
     BOP = []
