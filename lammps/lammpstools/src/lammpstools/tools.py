@@ -4,7 +4,6 @@ from pathlib import Path
 import numba 
 from scipy.spatial.distance import squareform
 
-
 def read_traj(t):
     Nskip = 9 
     
@@ -14,8 +13,9 @@ def read_traj(t):
     mfile = Path(t)
     Natoms = 0 
     if mfile.is_file():
-        with open(t, "r") as traj_file:
-            try: 
+        try: 
+            with open(t, "r") as traj_file:
+           
                 for i,line in enumerate(traj_file):
                     modulo = i % (Nskip+Natoms)
                     frame_nr = i // (Nskip+Natoms)
@@ -57,8 +57,10 @@ def read_traj(t):
                         Config[-1].append(np.array([x,y,z])) 
 
                     frame_nr_old = frame_nr
-            except EOFError as er:
-                print(er)
+                    
+        except (EOFError, IndexError, ValueError) as er:
+            print("Caught error in {}:".format(t), er) 
+    
         
         if Config:
             if len(Config[-1])!=Natoms:

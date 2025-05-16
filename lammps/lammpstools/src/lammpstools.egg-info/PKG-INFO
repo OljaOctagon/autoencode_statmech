@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: lammpstools
+Version: 0.1.0
+Summary: tools to read and process lammps files
+Author-email: Carina Karner <catnat@protonmail.com>
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+Provides-Extra: dev

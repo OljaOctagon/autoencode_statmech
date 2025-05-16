@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]   # or "hatchling", "poetry-core", …
+build-backend = "setuptools.build_meta"
+
+[project]                 # PEP 621 block
+name = "lammpstools"
+version = "0.1.0"
+description = "tools to read and process lammps files"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {file = "LICENSE"}
+authors = [{name = "Carina Karner", email = "catnat@protonmail.com"}]
+
+dependencies = [
+"numpy>=1.26",
+"pathlib>=1.0.1",
+"numba>=0.61.2", 
+"scipy>=1.11.3",
+]
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]         # creates a CLI: `my-cli`
+my-cli = "lammpstools.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}             # tell Setuptools about /src
+packages = ["lammpstools"]   
