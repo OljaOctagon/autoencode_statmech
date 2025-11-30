@@ -195,6 +195,34 @@ def distances(frame_i, Box):
     return dist_norm
 
 
+def pair_distance(id1, id2, frame_i, Box):
+    lx_box = Box[0]
+    ly_box = Box[1]
+    lz_box = Box[2]
+
+    ipos = frame_i[id1]
+    jpos = frame_i[id2]
+
+    dist = ipos - jpos
+
+    dx = dist[0]
+    dy = dist[1]
+    dz = dist[2]
+
+    sign_dx = np.sign(dx)
+    sign_dy = np.sign(dy)
+    sign_dz = np.sign(dz)
+
+    # pbc only for x and y
+    dx = sign_dx * (min(np.fabs(dx), lx_box - np.fabs(dx)))
+    dy = sign_dy * (min(np.fabs(dy), ly_box - np.fabs(dy)))
+    dz = sign_dz * (min(np.fabs(dz), lz_box - np.fabs(dz)))
+
+    dist_ij = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+    return dist_ij
+
+
 @numba.njit(fastmath=True, parallel=False)
 def vector_squareform_distances(frame_i, Box):
     lx_box = Box[0]
