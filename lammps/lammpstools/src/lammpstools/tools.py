@@ -213,7 +213,7 @@ def pair_distance(id1, id2, frame_i, Box):
     sign_dy = np.sign(dy)
     sign_dz = np.sign(dz)
 
-    # pbc only for x and y
+    # pbc 
     dx = sign_dx * (min(np.fabs(dx), lx_box - np.fabs(dx)))
     dy = sign_dy * (min(np.fabs(dy), ly_box - np.fabs(dy)))
     dz = sign_dz * (min(np.fabs(dz), lz_box - np.fabs(dz)))
@@ -221,6 +221,40 @@ def pair_distance(id1, id2, frame_i, Box):
     dist_ij = np.sqrt(dx * dx + dy * dy + dz * dz)
 
     return dist_ij
+
+@numba.njit(fastmath=True, parallel=False)
+def one_particle_distance(id1,frame_i,Box):
+    lx_box = Box[0]
+    ly_box = Box[1]
+    lz_box = Box[2]
+
+    dist_norm = []
+    for i, ipos in enumerate(frame_i):
+        if i!=id1:
+            dist = ipos - frame_i[id1]
+
+            dx = dist[0]
+            dy = dist[1]
+            dz = dist[2]
+
+            sign_dx = np.sign(dx)
+            sign_dy = np.sign(dy)
+            sign_dz = np.sign(dz)
+
+            # pbc 
+            dx = sign_dx * (min(np.fabs(dx), lx_box - np.fabs(dx)))
+            dy = sign_dy * (min(np.fabs(dy), ly_box - np.fabs(dy)))
+            dz = sign_dz * (min(np.fabs(dz), lz_box - np.fabs(dz)))
+
+            dist_ij = np.sqrt(dx * dx + dy * dy + dz * dz)
+            dist_norm.append(dist_ij)
+
+    return dist_norm
+
+def nextN_neighbours(id1, nn, frame_i, Box):
+    dist = one_particle_distance(id1, frame_i, Box)
+    NextN = np.sort(dist)[:nn]
+    return NextN
 
 
 @numba.njit(fastmath=True, parallel=False)
