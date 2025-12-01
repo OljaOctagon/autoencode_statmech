@@ -49,12 +49,12 @@ for istep in range(N_steps):
     Bi = Box[istep]
     picked = pick_particles(N_pick, Natoms, Ci, Bi)
     print(picked)
-
+    # Calculate next neighbours  and BOP of each particle 
     for id_particle in picked:
         NextN = nextN_neighbours_per_id(id_particle, nn, Ci, Bi)
-        print(NextN)
         
-    # Calculate next neighbours of each particle 
+
+    
 
 
 
