@@ -1,7 +1,7 @@
 import keras
 import numpy as np
 import pandas as pd
-from lammpstools.tools import distances, neighbours, read_traj, pair_distance
+from lammpstools.tools import distances, neighbours, read_traj, pair_distance, nextN_neighbours_per_id
 from scipy.spatial.distance import squareform
 import argparse 
 
@@ -53,6 +53,7 @@ for istep in range(N_steps):
     for id_particle in picked:
         NextN = nextN_neighbours_per_id(id_particle, nn, Ci, Bi)
         print(NextN)
+        
     # Calculate next neighbours of each particle 
 
 

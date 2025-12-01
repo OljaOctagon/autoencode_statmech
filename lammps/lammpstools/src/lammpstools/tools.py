@@ -251,7 +251,7 @@ def one_particle_distance(id1,frame_i,Box):
 
     return dist_norm
 
-def nextN_neighbours(id1, nn, frame_i, Box):
+def nextN_neighbours_per_id(id1, nn, frame_i, Box):
     dist = one_particle_distance(id1, frame_i, Box)
     NextN = np.sort(dist)[:nn]
     return NextN
