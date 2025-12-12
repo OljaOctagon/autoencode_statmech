@@ -104,7 +104,7 @@ if __name__ == "__main__":
 
     # Precompute w4 and w6 for all particles in all frames
     print("Computing w4 and w6 for all frames ...")
-    w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, nn)
+    w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
     print("w4w6 computation complete.")
 
     # Prepare lists to collect picked data for all frames
