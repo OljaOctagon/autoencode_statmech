@@ -14,6 +14,7 @@ from lammpstools.tools import (
 )
 from scipy.spatial.distance import squareform
 import argparse
+from tqdm import tqdm
 
 
 def pick_particles(N_pick, Natoms, Config, Box, Min_distance=5):
@@ -117,7 +118,7 @@ if __name__ == "__main__":
     all_vec_dist_picked = []
     all_w4w6_picked = []
 
-    for istep in range(Tmax):
+    for istep in tqdm(range(Tmax), total=Tmax, desc="Frames"):
         logging.info(f"Processing frame {istep + 1}/{Tmax} ...")
         Config_i = Config[istep] * Box[istep]
         Box_i = Box[istep]
