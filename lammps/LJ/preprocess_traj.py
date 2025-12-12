@@ -1,6 +1,7 @@
 import keras
 import numpy as np
 import pandas as pd
+import logging
 from lammpstools.tools import (
     distances,
     neighbours,
@@ -45,7 +46,7 @@ def pick_particles(N_pick, Natoms, Config, Box, Min_distance=5):
     """
     # pick first particle id uniformly at random in the range [0, Natoms-1]
     id = np.random.randint(0, Natoms)
-    print("first id", id)
+    logging.debug(f"first id {id}")
     # initiate list of picked particle ids
     picked = [id]
 
@@ -53,7 +54,7 @@ def pick_particles(N_pick, Natoms, Config, Box, Min_distance=5):
     while len(picked) < N_pick:
         # propose a new candidate id at random
         id_candidate = np.random.randint(0, Natoms)
-        print("new candidate id ", id_candidate)
+        logging.debug(f"new candidate id {id_candidate}")
         # initialize distance with a large value
         dist_ij = 1000
         # skip candidates already picked
@@ -64,23 +65,27 @@ def pick_particles(N_pick, Natoms, Config, Box, Min_distance=5):
                 dist_ij = pair_distance(id_check, id_candidate, Config, Box)
                 # if too close to any picked particle, reject candidate immediately
                 if dist_ij < Min_distance:
-                    print(
-                        "dist between {} and {}: {} : too small".format(
-                            id_candidate, id_check, dist_ij
-                        )
+                    logging.debug(
+                        f"dist between {id_candidate} and {id_check}: {dist_ij} : too small"
                     )
                     break
             # if the loop did not break (candidate was far enough from all),
             # and if id_check equals the last element of picked; append candidate
             if id_check == picked[-1]:
                 picked.append(id_candidate)
-                print("picked so far: ", picked)
+                logging.debug(f"picked so far: {picked}")
 
     picked = np.array(picked)
     return picked
 
 
 if __name__ == "__main__":
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     # Read number of particles to pick from command line
     parser = argparse.ArgumentParser()
     parser.add_argument("-npick")
@@ -95,17 +100,17 @@ if __name__ == "__main__":
     Min_distance = 5
 
     # Read trajectory
-    print(f"Reading trajectory from {args.f} ...")
+    logging.info(f"Reading trajectory from {args.f} ...")
     Natoms, Config, Box = read_traj(args.f)
     Tmax = len(Config)
-    print(f"Trajectory loaded: {Tmax} frames, {Natoms} atoms per frame.")
-    print("First frame coordinates:")
-    print(Config[0] if Tmax > 0 else "No frames loaded.")
+    logging.info(f"Trajectory loaded: {Tmax} frames, {Natoms} atoms per frame.")
+    logging.info("First frame coordinates:")
+    logging.info(Config[0] if Tmax > 0 else "No frames loaded.")
 
     # Precompute w4 and w6 for all particles in all frames
-    print("Computing w4 and w6 for all frames ...")
+    logging.info("Computing w4 and w6 for all frames ...")
     w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
-    print("w4w6 computation complete.")
+    logging.info("w4w6 computation complete.")
 
     # Prepare lists to collect picked data for all frames
     all_dist_picked = []
@@ -113,12 +118,12 @@ if __name__ == "__main__":
     all_w4w6_picked = []
 
     for istep in range(Tmax):
-        print(f"Processing frame {istep + 1}/{Tmax} ...")
+        logging.info(f"Processing frame {istep + 1}/{Tmax} ...")
         Config_i = Config[istep] * Box[istep]
         Box_i = Box[istep]
 
         # obtain picked particle ids for this frame
-        print("  Picking particles ...")
+        logging.info("  Picking particles ...")
         picked_ids = pick_particles(
             N_pick,
             Natoms,
@@ -127,7 +132,7 @@ if __name__ == "__main__":
             Min_distance=Min_distance,
         )
         # obtain nearest neighbor distances and vectors for picked particles only
-        print(
+        logging.info(
             "  Computing nearest neighbor distances and vectors for picked particles ..."
         )
         dist_picked = []
@@ -145,7 +150,7 @@ if __name__ == "__main__":
         all_w4w6_picked.append(w4w6_picked)
 
     # Convert lists to arrays and flatten across all frames (remove time dimension)
-    print("Converting results to arrays ...")
+    logging.info("Converting results to arrays ...")
     all_dist_picked = np.concatenate(
         all_dist_picked, axis=0
     )  # shape: (Tmax*N_pick, nn)
@@ -155,11 +160,11 @@ if __name__ == "__main__":
     all_w4w6_picked = np.concatenate(all_w4w6_picked, axis=0)  # shape: (Tmax*N_pick, 2)
 
     # Save to disk as compressed npz
-    print("Saving picked particle data to particle_data.npz ...")
+    logging.info("Saving picked particle data to particle_data.npz ...")
     np.savez_compressed(
         "particle_data.npz",
         dist=all_dist_picked,
         vec_dist=all_vec_dist_picked,
         w4w6=all_w4w6_picked,
     )
-    print("Done.")
+    logging.info("Done.")
