@@ -1,11 +1,9 @@
-
 import freud
-from typing import  Optional
-import numpy as np 
+from typing import Optional
+import numpy as np
 
 
 def _compute_w4_w6_trajectory(
-    
     Config,
     Box,
     Natoms: int,
@@ -47,8 +45,8 @@ def _compute_w4_w6_trajectory(
     # Reuse the same Steinhardt instance for all frames
     steinhardt = freud.order.Steinhardt(
         l=l_list,
-        average=True,   # Lechner–Dellago averaged OP
-        wl=True,        # compute w_l (not q_l)
+        average=True,  # Lechner–Dellago averaged OP
+        wl=True,  # compute w_l (not q_l)
     )
 
     for t in range(t_max):
@@ -66,7 +64,7 @@ def _compute_w4_w6_trajectory(
             system=(box, positions),
             neighbors={"num_neighbors": num_neighbors},
         )
-        
-        w_traj_all[t, :, :] = steinhardt.particle_order # shape (Natoms, 2): [w_4, w_6]
 
-    return w_traj_all #shape (t_max,Natoms,2)
+        w_traj_all[t, :, :] = steinhardt.particle_order  # shape (Natoms, 2): [w_4, w_6]
+
+    return w_traj_all  # shape (t_max,Natoms,2)

@@ -8,8 +8,8 @@ from lammpstools.tools import (
     pair_distance,
     nextN_neighbours_per_id,
     _compute_w4_w6_trajectory,
-    _get_nn_vector,
-    _get_nn_dist,
+    get_nn_vector_one,
+    get_nn_dist_one,
 )
 from scipy.spatial.distance import squareform
 import argparse
@@ -85,25 +85,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-npick")
     parser.add_argument("-nn", default=12)
+    parser.add_argument("-f", default="traj.lammpstrj")
 
     args = parser.parse_args()
+    # number of particles to pick per frame
     N_pick = int(args.npick)
     nn = int(args.nn)
     # nb this is 5 diameters distance (i.e LJ units)
     Min_distance = 5
 
     # Read trajectory
-    Natoms, Config, Box = read_traj("trajectory.lammpstrj")
+    print(f"Reading trajectory from {args.f} ...")
+    Natoms, Config, Box = read_traj(args.f)
     Tmax = len(Config)
+    print(f"Trajectory loaded: {Tmax} frames, {Natoms} atoms per frame.")
+    print("First frame coordinates:")
+    print(Config[0] if Tmax > 0 else "No frames loaded.")
 
     # Precompute w4 and w6 for all particles in all frames
-    w4w6 = _compute_w4_w6_trajectory(
-        Config,
-        Box,
-        Natoms,
-        t_max=None,
-        num_neighbors=12,
-    )
+    print("Computing w4 and w6 for all frames ...")
+    w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, nn)
+    print("w4w6 computation complete.")
 
     # Prepare lists to collect picked data for all frames
     all_dist_picked = []
@@ -111,10 +113,12 @@ if __name__ == "__main__":
     all_w4w6_picked = []
 
     for istep in range(Tmax):
+        print(f"Processing frame {istep + 1}/{Tmax} ...")
         Config_i = Config[istep] * Box[istep]
         Box_i = Box[istep]
 
         # obtain picked particle ids for this frame
+        print("  Picking particles ...")
         picked_ids = pick_particles(
             N_pick,
             Natoms,
@@ -122,28 +126,40 @@ if __name__ == "__main__":
             Box_i,
             Min_distance=Min_distance,
         )
-        # obtain nearest neighbor distances and vectors for all particles of this frame
-        dist = _get_nn_dist(Config_i, Box_i, nn)
-        vec_dist = _get_nn_vector(Config_i, Box_i, nn)
+        # obtain nearest neighbor distances and vectors for picked particles only
+        print(
+            "  Computing nearest neighbor distances and vectors for picked particles ..."
+        )
+        dist_picked = []
+        vec_dist_picked = []
+        for pid in picked_ids:
+            dist_picked.append(get_nn_dist_one(pid, Config_i, Box_i, nn))
+            vec_dist_picked.append(get_nn_vector_one(pid, Config_i, Box_i, nn))
 
-        # gather scalar and vector distances and w4w6 for picked particles
-        dist_picked = dist[picked_ids, :]
-        vec_dist_picked = vec_dist[picked_ids, :]
+        dist_picked = np.array(dist_picked)
+        vec_dist_picked = np.array(vec_dist_picked)
         w4w6_picked = w4w6[istep, picked_ids, :]
 
         all_dist_picked.append(dist_picked)
         all_vec_dist_picked.append(vec_dist_picked)
         all_w4w6_picked.append(w4w6_picked)
 
-    # Convert lists to arrays (shape: [Tmax, N_pick, ...])
-    all_dist_picked = np.array(all_dist_picked)
-    all_vec_dist_picked = np.array(all_vec_dist_picked)
-    all_w4w6_picked = np.array(all_w4w6_picked)
+    # Convert lists to arrays and flatten across all frames (remove time dimension)
+    print("Converting results to arrays ...")
+    all_dist_picked = np.concatenate(
+        all_dist_picked, axis=0
+    )  # shape: (Tmax*N_pick, nn)
+    all_vec_dist_picked = np.concatenate(
+        all_vec_dist_picked, axis=0
+    )  # shape: (Tmax*N_pick, nn, 3)
+    all_w4w6_picked = np.concatenate(all_w4w6_picked, axis=0)  # shape: (Tmax*N_pick, 2)
 
     # Save to disk as compressed npz
+    print("Saving picked particle data to particle_data.npz ...")
     np.savez_compressed(
         "particle_data.npz",
         dist=all_dist_picked,
         vec_dist=all_vec_dist_picked,
         w4w6=all_w4w6_picked,
     )
+    print("Done.")

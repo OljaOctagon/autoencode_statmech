@@ -3,6 +3,9 @@ import gzip
 from pathlib import Path
 import numba
 from scipy.spatial.distance import squareform
+import freud
+from typing import Optional
+import numpy as np
 
 
 def read_traj(t):
@@ -213,7 +216,7 @@ def pair_distance(id1, id2, frame_i, Box):
     sign_dy = np.sign(dy)
     sign_dz = np.sign(dz)
 
-    # pbc 
+    # pbc
     dx = sign_dx * (min(np.fabs(dx), lx_box - np.fabs(dx)))
     dy = sign_dy * (min(np.fabs(dy), ly_box - np.fabs(dy)))
     dz = sign_dz * (min(np.fabs(dz), lz_box - np.fabs(dz)))
@@ -222,15 +225,16 @@ def pair_distance(id1, id2, frame_i, Box):
 
     return dist_ij
 
+
 @numba.njit(fastmath=True, parallel=False)
-def one_particle_distance(id1,frame_i,Box):
+def one_particle_distance(id1, frame_i, Box):
     lx_box = Box[0]
     ly_box = Box[1]
     lz_box = Box[2]
 
     dist_norm = []
     for i, ipos in enumerate(frame_i):
-        if i!=id1:
+        if i != id1:
             dist = ipos - frame_i[id1]
 
             dx = dist[0]
@@ -241,7 +245,7 @@ def one_particle_distance(id1,frame_i,Box):
             sign_dy = np.sign(dy)
             sign_dz = np.sign(dz)
 
-            # pbc 
+            # pbc
             dx = sign_dx * (min(np.fabs(dx), lx_box - np.fabs(dx)))
             dy = sign_dy * (min(np.fabs(dy), ly_box - np.fabs(dy)))
             dz = sign_dz * (min(np.fabs(dz), lz_box - np.fabs(dz)))
@@ -251,13 +255,16 @@ def one_particle_distance(id1,frame_i,Box):
 
     return dist_norm
 
+
 def nextN_neighbours_per_id(id1, nn, frame_i, Box):
     dist = one_particle_distance(id1, frame_i, Box)
     NextN = np.sort(dist)[:nn]
     return NextN
 
 
-@numba.njit(fastmath=True, parallel=False) # I would not recommend it this way, because using lists doesnt work with numba, I could change it to have different shapes, but a buffer approach is probably faster anyway 
+@numba.njit(
+    fastmath=True, parallel=False
+)  # I would not recommend it this way, because using lists doesnt work with numba, I could change it to have different shapes, but a buffer approach is probably faster anyway
 def vector_squareform_distances(frame_i, Box):
     lx_box = Box[0]
     ly_box = Box[1]
@@ -303,9 +310,9 @@ def nextN_neighbours(Natoms, sq_dist, nn):
     return NextN
 
 
+# When creating an array of fixed size, the numba acceleration can take full effect. (Instead of lists)
+# Furthermore, not having to save all distances from every particle to every other particles saves a lot of time -> buffers
 
-#When creating an array of fixed size, the numba acceleration can take full effect. (Instead of lists)
-#Furthermore, not having to save all distances from every particle to every other particles saves a lot of time -> buffers 
 
 @numba.njit(fastmath=True, parallel=False)
 def _get_nn_vector(frame_i, box, nn):
@@ -400,7 +407,7 @@ def _get_nn_vector(frame_i, box, nn):
             vec_row[j, 0] = dx
             vec_row[j, 1] = dy
             vec_row[j, 2] = dz
-        
+
         # don't pick self as neighbour
         dist_row[i] = big
 
@@ -411,15 +418,11 @@ def _get_nn_vector(frame_i, box, nn):
         for k in range(nn):
             j_idx = idx_sorted[k]
             base = 3 * k
-            nextN_flat[i, base]     = vec_row[j_idx, 0]
+            nextN_flat[i, base] = vec_row[j_idx, 0]
             nextN_flat[i, base + 1] = vec_row[j_idx, 1]
             nextN_flat[i, base + 2] = vec_row[j_idx, 2]
 
     return nextN_flat
-
-
-
-
 
 
 @numba.njit(fastmath=True, parallel=False)
@@ -448,12 +451,10 @@ def _get_nn_dist(frame_i, box, nn):
     ly_box = box[1]
     lz_box = box[2]
 
-    
-    nextN_dist = np.empty((Natoms,nn))
+    nextN_dist = np.empty((Natoms, nn))
 
     # temporary buffers (per atom)
     dist_row = np.empty(Natoms)
-    
 
     big = 1.0e30
 
@@ -513,8 +514,7 @@ def _get_nn_dist(frame_i, box, nn):
 
             dist_ij = np.sqrt(dx * dx + dy * dy + dz * dz)
             dist_row[j] = dist_ij
-            
-        
+
         # don't pick self as neighbour
         dist_row[i] = big
 
@@ -524,5 +524,157 @@ def _get_nn_dist(frame_i, box, nn):
         # take nn nearest and flatten
         for k in range(nn):
             j_idx = idx_sorted[k]
-            nextN_dist[i,k] = dist_row[j_idx] 
-    return  nextN_dist
+            nextN_dist[i, k] = dist_row[j_idx]
+    return nextN_dist
+
+
+def _compute_w4_w6_trajectory(
+    Config,
+    Box,
+    Natoms: int,
+    t_max: Optional[int] = None,
+    num_neighbors: int = 12,
+) -> np.ndarray:
+    """
+    Compute averaged w_4 and w_6 (Lechner–Dellago) for all frames up to t_max.
+
+    Parameters
+    ----------
+    Config : array-like, shape (T, Natoms, 3)
+        Fractional coordinates per frame.
+    Box : array-like, shape (T, 3)
+        Box lengths [Lx, Ly, Lz] per frame.
+    Natoms : int
+        Number of atoms.
+    t_max : int or None
+        Number of time steps to use (from 0 to t_max-1).
+        If None, use all available frames.
+    num_neighbors : int
+        Number of neighbors for Steinhardt neighbor search.
+
+    Returns
+    -------
+    w_traj_all : np.ndarray, shape (T_used, Natoms, 2)
+        Full per-particle array [w_4, w_6] for each frame.
+    """
+    T_total = len(Config)
+    if t_max is None or t_max > T_total:
+        t_max = T_total
+
+    Natoms = int(Natoms)
+    l_list = [4, 6]
+
+    # Pre-allocate: (T_used, Natoms, 2)
+    w_traj_all = np.empty((t_max, Natoms, len(l_list)), dtype=np.float32)
+
+    # Reuse the same Steinhardt instance for all frames
+    steinhardt = freud.order.Steinhardt(
+        l=l_list,
+        average=True,  # Lechner–Dellago averaged OP
+        wl=True,  # compute w_l (not q_l)
+    )
+
+    for t in range(t_max):
+        # positions: (Natoms, 3), in Cartesian coordinates
+        positions = np.asarray(Config[t], dtype=np.float32)
+        box_lengths = np.asarray(Box[t], dtype=np.float32)  # [Lx, Ly, Lz]
+        positions = positions * box_lengths  # assuming Config is fractional
+
+        # Build box for this frame
+        Lx, Ly, Lz = box_lengths
+        box = freud.box.Box(Lx, Ly, Lz)
+
+        # Compute averaged w_l for this frame
+        steinhardt.compute(
+            system=(box, positions),
+            neighbors={"num_neighbors": num_neighbors},
+        )
+
+        w_traj_all[t, :, :] = steinhardt.particle_order  # shape (Natoms, 2): [w_4, w_6]
+
+    return w_traj_all  # shape (t_max,Natoms,2)
+
+
+@numba.njit(fastmath=True, parallel=False)
+def get_nn_dist_one(id1, frame_i, box, nn):
+    """
+    Compute distances from particle id1 to all others and return the nn nearest neighbor distances.
+
+    Parameters
+    ----------
+    id1 : int
+        Index of the reference particle.
+    frame_i : (Natoms, 3)
+        Cartesian positions.
+    box : (3,)
+        Box lengths [Lx, Ly, Lz].
+    nn : int
+        Number of nearest neighbors.
+
+    Returns
+    -------
+    nn_dist : (nn,)
+        Distances to the nn nearest neighbors.
+    """
+    Natoms = frame_i.shape[0]
+    lx_box, ly_box, lz_box = box
+    dist_row = np.empty(Natoms)
+    for j in range(Natoms):
+        if j == id1:
+            dist_row[j] = 1e30  # exclude self
+            continue
+        dx = frame_i[id1, 0] - frame_i[j, 0]
+        dy = frame_i[id1, 1] - frame_i[j, 1]
+        dz = frame_i[id1, 2] - frame_i[j, 2]
+        # PBC
+        dx = np.sign(dx) * min(np.abs(dx), lx_box - np.abs(dx))
+        dy = np.sign(dy) * min(np.abs(dy), ly_box - np.abs(dy))
+        dz = np.sign(dz) * min(np.abs(dz), lz_box - np.abs(dz))
+        dist_row[j] = np.sqrt(dx * dx + dy * dy + dz * dz)
+    idx_sorted = np.argsort(dist_row)
+    return dist_row[idx_sorted[:nn]]
+
+
+@numba.njit(fastmath=True, parallel=False)
+def get_nn_vector_one(id1, frame_i, box, nn):
+    """
+    Compute displacement vectors from particle id1 to its nn nearest neighbors.
+
+    Parameters
+    ----------
+    id1 : int
+        Index of the reference particle.
+    frame_i : (Natoms, 3)
+        Cartesian positions.
+    box : (3,)
+        Box lengths [Lx, Ly, Lz].
+    nn : int
+        Number of nearest neighbors.
+
+    Returns
+    -------
+    nn_vecs : (nn, 3)
+        Displacement vectors to the nn nearest neighbors.
+    """
+    Natoms = frame_i.shape[0]
+    lx_box, ly_box, lz_box = box
+    dist_row = np.empty(Natoms)
+    vec_row = np.empty((Natoms, 3))
+    for j in range(Natoms):
+        if j == id1:
+            dist_row[j] = 1e30
+            vec_row[j, :] = 0.0
+            continue
+        dx = frame_i[id1, 0] - frame_i[j, 0]
+        dy = frame_i[id1, 1] - frame_i[j, 1]
+        dz = frame_i[id1, 2] - frame_i[j, 2]
+        # PBC
+        dx = np.sign(dx) * min(np.abs(dx), lx_box - np.abs(dx))
+        dy = np.sign(dy) * min(np.abs(dy), ly_box - np.abs(dy))
+        dz = np.sign(dz) * min(np.abs(dz), lz_box - np.abs(dz))
+        dist_row[j] = np.sqrt(dx * dx + dy * dy + dz * dz)
+        vec_row[j, 0] = dx
+        vec_row[j, 1] = dy
+        vec_row[j, 2] = dz
+    idx_sorted = np.argsort(dist_row)
+    return vec_row[idx_sorted[:nn], :]
