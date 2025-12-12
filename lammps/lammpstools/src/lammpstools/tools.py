@@ -257,7 +257,7 @@ def nextN_neighbours_per_id(id1, nn, frame_i, Box):
     return NextN
 
 
-@numba.njit(fastmath=True, parallel=False)
+@numba.njit(fastmath=True, parallel=False) # I would not recommend it this way, because using lists doesnt work with numba, I could change it to have different shapes, but a buffer approach is probably faster anyway 
 def vector_squareform_distances(frame_i, Box):
     lx_box = Box[0]
     ly_box = Box[1]
@@ -303,10 +303,226 @@ def nextN_neighbours(Natoms, sq_dist, nn):
     return NextN
 
 
-def nextN_neighbours_vector(Natoms, sq_dist, vec_dist, nn):
-    NextN = np.zeros((int(Natoms), int(nn), 3))
-    for i in range(int(Natoms)):
-        idx = np.argsort(sq_dist[i])[1 : (nn + 1)]
-        NextN[i] = vec_dist[i][idx]
 
-    return NextN
+#When creating an array of fixed size, the numba acceleration can take full effect. (Instead of lists)
+#Furthermore, not having to save all distances from every particle to every other particles saves a lot of time -> buffers 
+
+@numba.njit(fastmath=True, parallel=False)
+def _get_nn_vector(frame_i, box, nn):
+    """
+    Numba-accelerated kernel that is intended to be numerically compatible
+    with your original `vector_squareform_distances` + `nextN_neighbours_vector`.
+
+    Parameters
+    ----------
+    frame_i : (Natoms, 3)
+        Cartesian positions (already Config[ti] * Box[ti]).
+    box : (3,)
+        Box lengths [Lx, Ly, Lz].
+    nn : int
+        Number of nearest neighbours.
+
+    Returns
+    -------
+    nextN_flat : (Natoms, nn*3)
+        For each atom i, displacement vectors to its nn nearest neighbors,
+        flattened [dx1, dy1, dz1, dx2, dy2, dz2, ...].
+    """
+    Natoms = frame_i.shape[0]
+    lx_box = box[0]
+    ly_box = box[1]
+    lz_box = box[2]
+
+    nextN_flat = np.empty((Natoms, nn * 3))
+
+    # temporary buffers (per atom)
+    dist_row = np.empty(Natoms)
+    vec_row = np.empty((Natoms, 3))
+
+    big = 1.0e30
+
+    for i in range(Natoms):
+        xi = frame_i[i, 0]
+        yi = frame_i[i, 1]
+        zi = frame_i[i, 2]
+
+        # compute distances from atom i to all j (including self)
+        for j in range(Natoms):
+            dx = xi - frame_i[j, 0]
+            dy = yi - frame_i[j, 1]
+            dz = zi - frame_i[j, 2]
+
+            # ---- PBC like in vector_squareform_distances ----
+            # dx
+            if dx > 0.0:
+                sign_dx = 1.0
+            elif dx < 0.0:
+                sign_dx = -1.0
+            else:
+                sign_dx = 0.0
+            adx = abs(dx)
+            adx_m = lx_box - adx
+            if adx_m < adx:
+                dx = sign_dx * adx_m
+            else:
+                dx = sign_dx * adx
+
+            # dy
+            if dy > 0.0:
+                sign_dy = 1.0
+            elif dy < 0.0:
+                sign_dy = -1.0
+            else:
+                sign_dy = 0.0
+            ady = abs(dy)
+            ady_m = ly_box - ady
+            if ady_m < ady:
+                dy = sign_dy * ady_m
+            else:
+                dy = sign_dy * ady
+
+            # dz
+            if dz > 0.0:
+                sign_dz = 1.0
+            elif dz < 0.0:
+                sign_dz = -1.0
+            else:
+                sign_dz = 0.0
+            adz = abs(dz)
+            adz_m = lz_box - adz
+            if adz_m < adz:
+                dz = sign_dz * adz_m
+            else:
+                dz = sign_dz * adz
+
+            dist_ij = np.sqrt(dx * dx + dy * dy + dz * dz)
+            dist_row[j] = dist_ij
+            vec_row[j, 0] = dx
+            vec_row[j, 1] = dy
+            vec_row[j, 2] = dz
+        
+        # don't pick self as neighbour
+        dist_row[i] = big
+
+        # sort neighbors by distance
+        idx_sorted = np.argsort(dist_row)
+
+        # take nn nearest and flatten
+        for k in range(nn):
+            j_idx = idx_sorted[k]
+            base = 3 * k
+            nextN_flat[i, base]     = vec_row[j_idx, 0]
+            nextN_flat[i, base + 1] = vec_row[j_idx, 1]
+            nextN_flat[i, base + 2] = vec_row[j_idx, 2]
+
+    return nextN_flat
+
+
+
+
+
+
+@numba.njit(fastmath=True, parallel=False)
+def _get_nn_dist(frame_i, box, nn):
+    """
+    Numba-accelerated kernel that is intended to be numerically compatible
+    with your original `vector_squareform_distances` + `nextN_neighbours_vector`.
+
+    Parameters
+    ----------
+    frame_i : (Natoms, 3)
+        Cartesian positions (already Config[ti] * Box[ti]).
+    box : (3,)
+        Box lengths [Lx, Ly, Lz].
+    nn : int
+        Number of nearest neighbours.
+
+    Returns
+    -------
+    nextN_dist : (Natoms, nn)
+        For each atom i, distance to its nn nearest neighbors,
+        flattened [d_1,d_2,d_3, ...].
+    """
+    Natoms = frame_i.shape[0]
+    lx_box = box[0]
+    ly_box = box[1]
+    lz_box = box[2]
+
+    
+    nextN_dist = np.empty((Natoms,nn))
+
+    # temporary buffers (per atom)
+    dist_row = np.empty(Natoms)
+    
+
+    big = 1.0e30
+
+    for i in range(Natoms):
+        xi = frame_i[i, 0]
+        yi = frame_i[i, 1]
+        zi = frame_i[i, 2]
+
+        # compute distances from atom i to all j (including self)
+        for j in range(Natoms):
+            dx = xi - frame_i[j, 0]
+            dy = yi - frame_i[j, 1]
+            dz = zi - frame_i[j, 2]
+
+            # ---- PBC like in vector_squareform_distances ----
+            # dx
+            if dx > 0.0:
+                sign_dx = 1.0
+            elif dx < 0.0:
+                sign_dx = -1.0
+            else:
+                sign_dx = 0.0
+            adx = abs(dx)
+            adx_m = lx_box - adx
+            if adx_m < adx:
+                dx = sign_dx * adx_m
+            else:
+                dx = sign_dx * adx
+
+            # dy
+            if dy > 0.0:
+                sign_dy = 1.0
+            elif dy < 0.0:
+                sign_dy = -1.0
+            else:
+                sign_dy = 0.0
+            ady = abs(dy)
+            ady_m = ly_box - ady
+            if ady_m < ady:
+                dy = sign_dy * ady_m
+            else:
+                dy = sign_dy * ady
+
+            # dz
+            if dz > 0.0:
+                sign_dz = 1.0
+            elif dz < 0.0:
+                sign_dz = -1.0
+            else:
+                sign_dz = 0.0
+            adz = abs(dz)
+            adz_m = lz_box - adz
+            if adz_m < adz:
+                dz = sign_dz * adz_m
+            else:
+                dz = sign_dz * adz
+
+            dist_ij = np.sqrt(dx * dx + dy * dy + dz * dz)
+            dist_row[j] = dist_ij
+            
+        
+        # don't pick self as neighbour
+        dist_row[i] = big
+
+        # sort neighbors by distance
+        idx_sorted = np.argsort(dist_row)
+
+        # take nn nearest and flatten
+        for k in range(nn):
+            j_idx = idx_sorted[k]
+            nextN_dist[i,k] = dist_row[j_idx] 
+    return  nextN_dist
