@@ -9,6 +9,7 @@ from lammpstools.tools import (
     pair_distance,
     nextN_neighbours_per_id,
     _compute_w4_w6_trajectory,
+    _compute_ql_trajectory,
     get_nn_vector_one,
     get_nn_dist_one,
 )
@@ -108,15 +109,16 @@ if __name__ == "__main__":
     logging.info("First frame coordinates:")
     logging.info(Config[0] if Tmax > 0 else "No frames loaded.")
 
-    # Precompute w4 and w6 for all particles in all frames
-    logging.info("Computing w4 and w6 for all frames ...")
-    w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
-    logging.info("w4w6 computation complete.")
+    # Precompute ql for all particles in all frames
+    logging.info("Computing ql for all frames ...")
+    ql = _compute_ql_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
+    logging.info("ql computation complete.")
 
     # Prepare lists to collect picked data for all frames
     all_dist_picked = []
     all_vec_dist_picked = []
-    all_w4w6_picked = []
+    # all_w4w6_picked = []
+    all_ql_picked = []
 
     for istep in tqdm(range(Tmax), total=Tmax, desc="Frames"):
         logging.info(f"Processing frame {istep + 1}/{Tmax} ...")
@@ -144,11 +146,13 @@ if __name__ == "__main__":
 
         dist_picked = np.array(dist_picked)
         vec_dist_picked = np.array(vec_dist_picked)
-        w4w6_picked = w4w6[istep, picked_ids, :]
+        # w4w6_picked = w4w6[istep, picked_ids, :]
+        ql_picked = ql[istep, picked_ids, :]
 
         all_dist_picked.append(dist_picked)
         all_vec_dist_picked.append(vec_dist_picked)
-        all_w4w6_picked.append(w4w6_picked)
+        # all_w4w6_picked.append(w4w6_picked)
+        all_ql_picked.append(ql_picked)
 
     # Convert lists to arrays and flatten across all frames (remove time dimension)
     logging.info("Converting results to arrays ...")
@@ -158,7 +162,8 @@ if __name__ == "__main__":
     all_vec_dist_picked = np.concatenate(
         all_vec_dist_picked, axis=0
     )  # shape: (Tmax*N_pick, nn, 3)
-    all_w4w6_picked = np.concatenate(all_w4w6_picked, axis=0)  # shape: (Tmax*N_pick, 2)
+    # all_w4w6_picked = np.concatenate(all_w4w6_picked, axis=0)  # shape: (Tmax*N_pick, 2)
+    all_ql_picked = np.concatenate(all_ql_picked, axis=0)  # shape: (Tmax*N_pick, 2)
 
     # Save to disk as compressed npz
     logging.info("Saving picked particle data to particle_data.npz ...")
@@ -166,6 +171,6 @@ if __name__ == "__main__":
         "particle_data.npz",
         dist=all_dist_picked,
         vec_dist=all_vec_dist_picked,
-        w4w6=all_w4w6_picked,
+        # w4w6=all_w4w6_picked,
     )
     logging.info("Done.")
