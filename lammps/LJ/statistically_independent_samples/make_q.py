@@ -75,7 +75,7 @@ def write_pdb_beta(
             # tempFactor (B-factor) is columns 61-66 in classic PDB formatting
             f.write(
                 "ATOM  {serial:5d} {name:<4s} {res:>3s} {chain:1s}{resseq:4d}    "
-                "{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{bf:6.2f}          {elem:>2s}\n".format(
+                "{x:8.3f}{y:8.3f}{z:8.3f}{occ:6.2f}{bf:6.7f}          {elem:>2s}\n".format(
                     serial=serial,
                     name=elem,
                     res="LJ",
@@ -96,6 +96,35 @@ def write_pdb_beta(
             f.write("END\n")
 
 
+def write_multimodel_pdb_beta(
+    filename,
+    frames_pos,
+    frames_beta,
+    box=None,
+    ids=None,
+    types=None,
+    wrap_into_box=False,
+):
+    """
+    Write multi-frame PDB with MODEL/ENDMDL; beta per frame.
+    frames_pos: iterable of (N,3)
+    frames_beta: iterable of (N,)
+    """
+    # start fresh
+    open(filename, "w").close()
+    for k, (pos, beta) in enumerate(zip(frames_pos, frames_beta), start=1):
+        write_pdb_beta(
+            filename,
+            pos,
+            beta,
+            box=box,
+            ids=ids,
+            types=types,
+            model_index=k,
+            wrap_into_box=wrap_into_box,
+        )
+
+
 if __name__ == "__main__":
     # Set up logging
     logging.basicConfig(
@@ -107,6 +136,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-nn", default=12)
     parser.add_argument("-f", default="traj.lammpstrj")
+    parser.add_argument("-type", default="snapshot")
 
     args = parser.parse_args()
     nn = int(args.nn)
@@ -122,10 +152,48 @@ if __name__ == "__main__":
     # Precompute ql for all particles in all frames
     logging.info("Computing ql for all frames ...")
     ql = _compute_ql_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
+
     w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
     logging.info("ql computation complete.")
 
-    Lx = Box[-1]
-    print(ql[0, :, 5])
-    print(len(Config[-1]))
-    write_pdb_beta("q6_frame.pdb", Config[-1], ql[0, :, 5], box=[Lx, Lx, Lx])
+    if args.type == "snapshot":
+        # Write last frame only
+        Lx = Box[-1]
+        write_pdb_beta("q6_frame.pdb", Config[-1], ql[0, :, 5], box=[Lx, Lx, Lx])
+        write_pdb_beta("q4_frame.pdb", Config[-1], ql[0, :, 3], box=[Lx, Lx, Lx])
+        write_pdb_beta("w4_frame.pdb", Config[-1], w4w6[0, :, 0], box=[Lx, Lx, Lx])
+        write_pdb_beta("w6_frame.pdb", Config[-1], w4w6[0, :, 1], box=[Lx, Lx, Lx])
+
+    logging.info("PDB writing complete.")
+
+np.savez_compressed(
+    "particle_data_seq.npz",
+    w4w6=w4w6,
+    ql=ql,
+)
+
+q6 = ql[:, :, 5]  # shape (T, N)
+with open("q6.dat", "w") as f:
+    for t in range(q6.shape[0]):
+        # 6 decimals is plenty; VMD will read as floats
+        f.write(" ".join(f"{val:.6f}" for val in q6[t]) + "\n")
+
+q4 = ql[:, :, 3]  # shape (T, N)
+with open("q4.dat", "w") as f:
+    for t in range(q4.shape[0]):
+        # 6 decimals is plenty; VMD will read as floats
+        f.write(" ".join(f"{val:.6f}" for val in q4[t]) + "\n")
+
+w4 = w4w6[:, :, 0]  # shape (T, N)
+with open("w4.dat", "w") as f:
+    for t in range(w4.shape[0]):
+        # 6 decimals is plenty; VMD will read as floats
+        f.write(" ".join(f"{val:.6f}" for val in w4[t]) + "\n")
+
+w6 = w4w6[:, :, 1]  # shape (T, N)
+with open("w6.dat", "w") as f:
+    for t in range(w6.shape[0]):
+        # 6 decimals is plenty; VMD will read as floats
+        f.write(" ".join(f"{val:.6f}" for val in w6[t]) + "\n")
+
+logging.info("Done.")
