@@ -13,6 +13,7 @@ from lammpstools.tools import (
     get_nn_vector_one,
     get_nn_dist_one,
 )
+from lammpstools import compute_ptm_from_lammpstrj
 from scipy.spatial.distance import squareform
 import argparse
 from tqdm import tqdm
@@ -115,11 +116,17 @@ if __name__ == "__main__":
     w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
     logging.info("ql computation complete.")
 
+    # Precompute ptm for all particles in all frames
+    logging.info(f"Computing ptm for all frames from {args.f} ...")
+    ptm = compute_ptm_from_lammpstrj(filename= args.f, t_max=None)
+    logging.info("ptm computation complete.")
+
     # Prepare lists to collect picked data for all frames
     all_dist_picked = []
     all_vec_dist_picked = []
     all_w4w6_picked = []
     all_ql_picked = []
+    all_ptm_picked = []
 
     for istep in tqdm(range(Tmax), total=Tmax, desc="Frames"):
         logging.info(f"Processing frame {istep + 1}/{Tmax} ...")
@@ -149,11 +156,13 @@ if __name__ == "__main__":
         vec_dist_picked = np.array(vec_dist_picked)
         w4w6_picked = w4w6[istep, picked_ids, :]
         ql_picked = ql[istep, picked_ids, :]
+        ptm_picked = ptm[istep, picked_ids, :]
 
         all_dist_picked.append(dist_picked)
         all_vec_dist_picked.append(vec_dist_picked)
         all_w4w6_picked.append(w4w6_picked)
         all_ql_picked.append(ql_picked)
+        all_ptm_picked.append(ptm_picked)
 
     # Convert lists to arrays and flatten across all frames (remove time dimension)
     logging.info("Converting results to arrays ...")
@@ -165,6 +174,7 @@ if __name__ == "__main__":
     )  # shape: (Tmax*N_pick, nn, 3)
     all_w4w6_picked = np.concatenate(all_w4w6_picked, axis=0)  # shape: (Tmax*N_pick, 2)
     all_ql_picked = np.concatenate(all_ql_picked, axis=0)  # shape: (Tmax*N_pick, 2)
+    all_ptm_picked = np.concatenate(all_ptm_picked, axis=0)
 
     # Save to disk as compressed npz
     logging.info("Saving picked particle data to particle_data.npz ...")
@@ -174,5 +184,6 @@ if __name__ == "__main__":
         vec_dist=all_vec_dist_picked,
         w4w6=all_w4w6_picked,
         ql=all_ql_picked,
+        ptm=all_ptm_picked,
     )
     logging.info("Done.")

@@ -1,5 +1,6 @@
 pyproject.toml
 src/lammpstools/__init__.py
+src/lammpstools/ptm_calc.py
 src/lammpstools/tools.py
 src/lammpstools.egg-info/PKG-INFO
 src/lammpstools.egg-info/SOURCES.txt

@@ -1,0 +1,36 @@
+# Python/cache artifacts
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.egg-info/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Generated particle-neighbourhood datasets
+particle_data*.npz
+particle_data_seq*.npz
+
+# Phase-local raw/processed data folders used by the analysis notebooks
+lammps/LJ/statistically_independent_samples/statistically_independent_samples/fcc/
+lammps/LJ/statistically_independent_samples/statistically_independent_samples/hcp/
+lammps/LJ/statistically_independent_samples/statistically_independent_samples/liquid/
+
+# LAMMPS trajectory/output files
+*.lammpstrj
+log.lammps
+*.restart
+lj.restart*
+q4.dat
+q6.dat
+w4.dat
+w6.dat
+steinhardt.dat
+virial_pressure.dat
+av_config_observables.dat
+
+# Visualization/export outputs
+*.pdb
+*.pdf
