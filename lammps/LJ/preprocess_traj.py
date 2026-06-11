@@ -1,20 +1,15 @@
-import keras
 import numpy as np
-import pandas as pd
 import logging
+import gc
+from pathlib import Path
+
 from lammpstools.tools import (
-    distances,
-    neighbours,
-    read_traj,
     pair_distance,
-    nextN_neighbours_per_id,
     _compute_w4_w6_trajectory,
     _compute_ql_trajectory,
     get_nn_vector_one,
-    get_nn_dist_one,
 )
-from lammpstools import compute_ptm_from_lammpstrj
-from scipy.spatial.distance import squareform
+from lammpstools import compute_ptm_from_lammpstrj, get_ptm_columns
 import argparse
 from tqdm import tqdm
 
@@ -82,6 +77,117 @@ def pick_particles(N_pick, Natoms, Config, Box, Min_distance=5):
     return picked
 
 
+def count_lammpstrj_frames(filename):
+    """Count frames without loading coordinates into memory."""
+    n_frames = 0
+    with open(filename, "r") as traj_file:
+        for line in traj_file:
+            if line.startswith("ITEM: TIMESTEP"):
+                n_frames += 1
+    return n_frames
+
+
+def iter_lammpstrj_frames(filename):
+    """Yield fractional coordinates and box lengths from a LAMMPS atom dump."""
+    with open(filename, "r") as traj_file:
+        while True:
+            line = traj_file.readline()
+            if not line:
+                break
+            if not line.startswith("ITEM: TIMESTEP"):
+                raise ValueError(f"Expected 'ITEM: TIMESTEP', got: {line.strip()}")
+
+            traj_file.readline()  # timestep
+
+            line = traj_file.readline()
+            if not line.startswith("ITEM: NUMBER OF ATOMS"):
+                raise ValueError(f"Expected 'ITEM: NUMBER OF ATOMS', got: {line.strip()}")
+            natoms = int(traj_file.readline())
+
+            line = traj_file.readline()
+            if not line.startswith("ITEM: BOX BOUNDS"):
+                raise ValueError(f"Expected 'ITEM: BOX BOUNDS', got: {line.strip()}")
+
+            box = np.empty(3, dtype=np.float32)
+            for dim in range(3):
+                lo, hi = np.array(traj_file.readline().split()[:2], dtype=np.float32)
+                box[dim] = hi - lo
+
+            atom_header = traj_file.readline().split()
+            try:
+                x_col = atom_header.index("xs") - 2
+                y_col = atom_header.index("ys") - 2
+                z_col = atom_header.index("zs") - 2
+            except ValueError:
+                x_col, y_col, z_col = 2, 3, 4
+
+            config = np.empty((natoms, 3), dtype=np.float32)
+            for atom_idx in range(natoms):
+                fields = traj_file.readline().split()
+                config[atom_idx, 0] = float(fields[x_col])
+                config[atom_idx, 1] = float(fields[y_col])
+                config[atom_idx, 2] = float(fields[z_col])
+
+            yield config, box
+
+
+def iter_lammpstrj_batches(filename, batch_size):
+    """Yield trajectory batches as (start_frame, Config, Box, Natoms)."""
+    configs = []
+    boxes = []
+    batch_start = 0
+    natoms = None
+
+    for frame_index, (config, box) in enumerate(iter_lammpstrj_frames(filename)):
+        if not configs:
+            batch_start = frame_index
+            natoms = config.shape[0]
+
+        configs.append(config)
+        boxes.append(box)
+
+        if len(configs) == batch_size:
+            yield (
+                batch_start,
+                np.stack(configs, axis=0),
+                np.stack(boxes, axis=0),
+                natoms,
+            )
+            configs = []
+            boxes = []
+
+    if configs:
+        yield (
+            batch_start,
+            np.stack(configs, axis=0),
+            np.stack(boxes, axis=0),
+            natoms,
+        )
+
+
+def compute_descriptor_batch(traj_path, batch_start, Config, Box, Natoms, nn):
+    """
+    Compute all full-frame descriptors for one batch.
+
+    Keeping this outside the main block preserves the original shape: the main
+    script orchestrates batching, while descriptor details stay in helper code.
+    """
+    logging.info("  Computing ql for batch ...")
+    ql = _compute_ql_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
+
+    logging.info("  Computing w4/w6 for batch ...")
+    w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
+
+    logging.info("  Computing PTM for batch ...")
+    ptm = compute_ptm_from_lammpstrj(
+        filename=str(traj_path),
+        t_start=batch_start,
+        t_max=len(Config),
+    )
+
+    return ql, w4w6, ptm
+
+
 if __name__ == "__main__":
     # Set up logging
     logging.basicConfig(
@@ -94,6 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("-npick")
     parser.add_argument("-nn", default=12)
     parser.add_argument("-f", default="traj.lammpstrj")
+    parser.add_argument("-batch", default=5)
 
     args = parser.parse_args()
     # number of particles to pick per frame
@@ -101,80 +208,84 @@ if __name__ == "__main__":
     nn = int(args.nn)
     # nb this is 5 diameters distance (i.e LJ units)
     Min_distance = 5
+    batch_size = int(args.batch)
 
-    # Read trajectory
-    logging.info(f"Reading trajectory from {args.f} ...")
-    Natoms, Config, Box = read_traj(args.f)
-    Tmax = len(Config)
-    logging.info(f"Trajectory loaded: {Tmax} frames, {Natoms} atoms per frame.")
-    logging.info("First frame coordinates:")
-    logging.info(Config[0] if Tmax > 0 else "No frames loaded.")
+    traj_path = Path(args.f)
+    Tmax = count_lammpstrj_frames(traj_path)
+    if Tmax == 0:
+        raise ValueError(f"No frames found in {traj_path}")
+    logging.info(f"Found {Tmax} frames in {traj_path}.")
 
-    # Precompute ql for all particles in all frames
-    logging.info("Computing ql for all frames ...")
-    ql = _compute_ql_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
-    w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
-    logging.info("ql computation complete.")
+    ptm_columns = get_ptm_columns()
 
-    # Precompute ptm for all particles in all frames
-    logging.info(f"Computing ptm for all frames from {args.f} ...")
-    ptm = compute_ptm_from_lammpstrj(filename= args.f, t_max=None)
-    logging.info("ptm computation complete.")
+    n_samples = Tmax * N_pick
+    all_dist_picked = np.empty((n_samples, nn), dtype=np.float32)
+    all_vec_dist_picked = np.empty((n_samples, nn, 3), dtype=np.float32)
+    all_w4w6_picked = np.empty((n_samples, 2), dtype=np.float32)
+    all_ql_picked = np.empty((n_samples, 20), dtype=np.float32)
+    all_ptm_picked = np.empty((n_samples, len(ptm_columns)), dtype=np.float32)
 
-    # Prepare lists to collect picked data for all frames
-    all_dist_picked = []
-    all_vec_dist_picked = []
-    all_w4w6_picked = []
-    all_ql_picked = []
-    all_ptm_picked = []
-
-    for istep in tqdm(range(Tmax), total=Tmax, desc="Frames"):
-        logging.info(f"Processing frame {istep + 1}/{Tmax} ...")
-        Config_i = Config[istep] * Box[istep]
-        Box_i = Box[istep]
-
-        # obtain picked particle ids for this frame
-        logging.info("  Picking particles ...")
-        picked_ids = pick_particles(
-            N_pick,
-            Natoms,
-            Config_i,
-            Box_i,
-            Min_distance=Min_distance,
-        )
-        # obtain nearest neighbor distances and vectors for picked particles only
+    total_batches = (Tmax + batch_size - 1) // batch_size
+    batch_iter = iter_lammpstrj_batches(traj_path, batch_size)
+    for batch_start, Config, Box, Natoms in tqdm(
+        batch_iter,
+        total=total_batches,
+        desc="Batches",
+    ):
+        batch_len = len(Config)
         logging.info(
-            "  Computing nearest neighbor distances and vectors for picked particles ..."
+            f"Processing batch starting at frame {batch_start + 1} "
+            f"with {batch_len} frames ..."
         )
-        dist_picked = []
-        vec_dist_picked = []
-        for pid in picked_ids:
-            dist_picked.append(get_nn_dist_one(pid, Config_i, Box_i, nn))
-            vec_dist_picked.append(get_nn_vector_one(pid, Config_i, Box_i, nn))
 
-        dist_picked = np.array(dist_picked)
-        vec_dist_picked = np.array(vec_dist_picked)
-        w4w6_picked = w4w6[istep, picked_ids, :]
-        ql_picked = ql[istep, picked_ids, :]
-        ptm_picked = ptm[istep, picked_ids, :]
+        ql, w4w6, ptm = compute_descriptor_batch(
+            traj_path,
+            batch_start,
+            Config,
+            Box,
+            Natoms,
+            nn,
+        )
 
-        all_dist_picked.append(dist_picked)
-        all_vec_dist_picked.append(vec_dist_picked)
-        all_w4w6_picked.append(w4w6_picked)
-        all_ql_picked.append(ql_picked)
-        all_ptm_picked.append(ptm_picked)
+        for local_istep in range(batch_len):
+            istep = batch_start + local_istep
+            logging.info(f"  Processing frame {istep + 1}/{Tmax} ...")
+            Config_i = Config[local_istep] * Box[local_istep]
+            Box_i = Box[local_istep]
 
-    # Convert lists to arrays and flatten across all frames (remove time dimension)
-    logging.info("Converting results to arrays ...")
-    all_dist_picked = np.concatenate(
-        all_dist_picked, axis=0
-    )  # shape: (Tmax*N_pick, nn)
-    all_vec_dist_picked = np.concatenate(
-        all_vec_dist_picked, axis=0
-    )  # shape: (Tmax*N_pick, nn, 3)
-    all_w4w6_picked = np.concatenate(all_w4w6_picked, axis=0)  # shape: (Tmax*N_pick, 2)
-    all_ql_picked = np.concatenate(all_ql_picked, axis=0)  # shape: (Tmax*N_pick, 2)
-    all_ptm_picked = np.concatenate(all_ptm_picked, axis=0)
+            # obtain picked particle ids for this frame
+            logging.info("    Picking particles ...")
+            picked_ids = pick_particles(
+                N_pick,
+                Natoms,
+                Config_i,
+                Box_i,
+                Min_distance=Min_distance,
+            )
+            # obtain nearest neighbor distances and vectors for picked particles only
+            logging.info(
+                "    Computing nearest neighbor distances and vectors for picked particles ..."
+            )
+            dist_picked = np.empty((N_pick, nn), dtype=np.float32)
+            vec_dist_picked = np.empty((N_pick, nn, 3), dtype=np.float32)
+            for local_idx, pid in enumerate(picked_ids):
+                vec = get_nn_vector_one(pid, Config_i, Box_i, nn)
+                vec_dist_picked[local_idx] = vec
+                dist_picked[local_idx] = np.sqrt(np.sum(vec * vec, axis=1))
+
+            start = istep * N_pick
+            stop = start + N_pick
+
+            all_dist_picked[start:stop] = dist_picked
+            all_vec_dist_picked[start:stop] = vec_dist_picked
+            all_w4w6_picked[start:stop] = w4w6[local_istep, picked_ids, :]
+            all_ql_picked[start:stop] = ql[local_istep, picked_ids, :]
+            all_ptm_picked[start:stop] = ptm[local_istep, picked_ids, :]
+
+            del Config_i, dist_picked, vec_dist_picked
+
+        del Config, Box, ql, w4w6, ptm
+        gc.collect()
 
     # Save to disk as compressed npz
     logging.info("Saving picked particle data to particle_data.npz ...")
