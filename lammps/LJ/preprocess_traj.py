@@ -9,6 +9,7 @@ from lammpstools.tools import (
     get_nn_vector_one,
 )
 from lammpstools import (
+    compute_cna_trajectory,
     compute_ptm_batch_from_pipeline,
     create_ptm_pipeline,
 )
@@ -172,8 +173,9 @@ class DescriptorBatchComputer:
     Reuse expensive descriptor setup while keeping the main loop batch-oriented.
     """
 
-    def __init__(self, traj_path, nn):
+    def __init__(self, traj_path, nn, cna_fixed_cutoff):
         self.nn = nn
+        self.cna_fixed_cutoff = cna_fixed_cutoff
         self.ql_order = freud.order.Steinhardt(
             l=list(range(1, 21)),
             average=True,
@@ -185,6 +187,7 @@ class DescriptorBatchComputer:
             wl=True,
         )
         self.ptm_pipeline, self.ptm_columns = create_ptm_pipeline(filename=str(traj_path))
+        self.cna_columns = ["cna_fixed", "cna_adaptive", "cna_interval"]
         self.n_frames = self.ptm_pipeline.num_frames
 
     def compute(self, batch_start, Config, Box):
@@ -218,7 +221,21 @@ class DescriptorBatchComputer:
             t_max=batch_len,
         )
 
-        return ql, w4w6, ptm
+        cna, cna_columns = compute_cna_trajectory(
+            Config,
+            Box,
+            Natoms=natoms,
+            t_max=None,
+            fractional=True,
+            fixed_cutoff=self.cna_fixed_cutoff,
+            include_fixed=True,
+            include_adaptive=True,
+            include_interval=True,
+            return_columns=True,
+        )
+        self.cna_columns = cna_columns
+
+        return ql, w4w6, ptm, cna
 
 
 if __name__ == "__main__":
@@ -234,6 +251,7 @@ if __name__ == "__main__":
     parser.add_argument("-nn", default=12)
     parser.add_argument("-f", default="traj.lammpstrj")
     parser.add_argument("-batch", default=5)
+    parser.add_argument("-cna_cutoff", default=1.5)
 
     args = parser.parse_args()
     # number of particles to pick per frame
@@ -242,9 +260,10 @@ if __name__ == "__main__":
     # nb this is 5 diameters distance (i.e LJ units)
     Min_distance = 5
     batch_size = int(args.batch)
+    cna_fixed_cutoff = float(args.cna_cutoff)
 
     traj_path = Path(args.f)
-    descriptors = DescriptorBatchComputer(traj_path, nn)
+    descriptors = DescriptorBatchComputer(traj_path, nn, cna_fixed_cutoff)
     Tmax = descriptors.n_frames
     if Tmax == 0:
         raise ValueError(f"No frames found in {traj_path}")
@@ -256,6 +275,7 @@ if __name__ == "__main__":
     all_w4w6_picked = np.empty((n_samples, 2), dtype=np.float32)
     all_ql_picked = np.empty((n_samples, 20), dtype=np.float32)
     all_ptm_picked = np.empty((n_samples, len(descriptors.ptm_columns)), dtype=np.float32)
+    all_cna_picked = np.empty((n_samples, len(descriptors.cna_columns)), dtype=np.int8)
 
     total_batches = (Tmax + batch_size - 1) // batch_size
     batch_iter = iter_lammpstrj_batches(traj_path, batch_size)
@@ -270,7 +290,7 @@ if __name__ == "__main__":
             f"with {batch_len} frames ..."
         )
 
-        ql, w4w6, ptm = descriptors.compute(batch_start, Config, Box)
+        ql, w4w6, ptm, cna = descriptors.compute(batch_start, Config, Box)
 
         for local_istep in range(batch_len):
             istep = batch_start + local_istep
@@ -306,10 +326,11 @@ if __name__ == "__main__":
             all_w4w6_picked[start:stop] = w4w6[local_istep, picked_ids, :]
             all_ql_picked[start:stop] = ql[local_istep, picked_ids, :]
             all_ptm_picked[start:stop] = ptm[local_istep, picked_ids, :]
+            all_cna_picked[start:stop] = cna[local_istep, picked_ids, :]
 
             del Config_i, dist_picked, vec_dist_picked
 
-        del Config, Box, ql, w4w6, ptm
+        del Config, Box, ql, w4w6, ptm, cna
         gc.collect()
 
     # Save to disk as compressed npz
@@ -321,5 +342,7 @@ if __name__ == "__main__":
         w4w6=all_w4w6_picked,
         ql=all_ql_picked,
         ptm=all_ptm_picked,
+        cna=all_cna_picked,
+        cna_columns=np.array(descriptors.cna_columns),
     )
     logging.info("Done.")

@@ -5,3 +5,4 @@ from .ptm_calc import (
     create_ptm_pipeline,
     get_ptm_columns,
 )
+from .cna_calc import compute_cna_trajectory
