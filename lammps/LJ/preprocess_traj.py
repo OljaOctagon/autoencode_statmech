@@ -3,13 +3,15 @@ import logging
 import gc
 from pathlib import Path
 
+import freud
 from lammpstools.tools import (
     pair_distance,
-    _compute_w4_w6_trajectory,
-    _compute_ql_trajectory,
     get_nn_vector_one,
 )
-from lammpstools import compute_ptm_from_lammpstrj, get_ptm_columns
+from lammpstools import (
+    compute_ptm_batch_from_pipeline,
+    create_ptm_pipeline,
+)
 import argparse
 from tqdm import tqdm
 
@@ -165,27 +167,58 @@ def iter_lammpstrj_batches(filename, batch_size):
         )
 
 
-def compute_descriptor_batch(traj_path, batch_start, Config, Box, Natoms, nn):
+class DescriptorBatchComputer:
     """
-    Compute all full-frame descriptors for one batch.
-
-    Keeping this outside the main block preserves the original shape: the main
-    script orchestrates batching, while descriptor details stay in helper code.
+    Reuse expensive descriptor setup while keeping the main loop batch-oriented.
     """
-    logging.info("  Computing ql for batch ...")
-    ql = _compute_ql_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
 
-    logging.info("  Computing w4/w6 for batch ...")
-    w4w6 = _compute_w4_w6_trajectory(Config, Box, Natoms, t_max=None, num_neighbors=nn)
+    def __init__(self, traj_path, nn):
+        self.nn = nn
+        self.ql_order = freud.order.Steinhardt(
+            l=list(range(1, 21)),
+            average=True,
+            wl=False,
+        )
+        self.w4w6_order = freud.order.Steinhardt(
+            l=[4, 6],
+            average=True,
+            wl=True,
+        )
+        self.ptm_pipeline, self.ptm_columns = create_ptm_pipeline(filename=str(traj_path))
+        self.n_frames = self.ptm_pipeline.num_frames
 
-    logging.info("  Computing PTM for batch ...")
-    ptm = compute_ptm_from_lammpstrj(
-        filename=str(traj_path),
-        t_start=batch_start,
-        t_max=len(Config),
-    )
+    def compute(self, batch_start, Config, Box):
+        batch_len = len(Config)
+        natoms = Config.shape[1]
 
-    return ql, w4w6, ptm
+        ql = np.empty((batch_len, natoms, 20), dtype=np.float32)
+        w4w6 = np.empty((batch_len, natoms, 2), dtype=np.float32)
+
+        for local_t in range(batch_len):
+            positions = np.asarray(Config[local_t], dtype=np.float32)
+            box_lengths = np.asarray(Box[local_t], dtype=np.float32)
+            positions = positions * box_lengths
+            freud_box = freud.box.Box(*box_lengths)
+
+            self.ql_order.compute(
+                system=(freud_box, positions),
+                neighbors={"num_neighbors": self.nn},
+            )
+            ql[local_t] = self.ql_order.particle_order
+
+            self.w4w6_order.compute(
+                system=(freud_box, positions),
+                neighbors={"num_neighbors": self.nn},
+            )
+            w4w6[local_t] = self.w4w6_order.particle_order
+
+        ptm = compute_ptm_batch_from_pipeline(
+            self.ptm_pipeline,
+            t_start=batch_start,
+            t_max=batch_len,
+        )
+
+        return ql, w4w6, ptm
 
 
 if __name__ == "__main__":
@@ -211,19 +244,18 @@ if __name__ == "__main__":
     batch_size = int(args.batch)
 
     traj_path = Path(args.f)
-    Tmax = count_lammpstrj_frames(traj_path)
+    descriptors = DescriptorBatchComputer(traj_path, nn)
+    Tmax = descriptors.n_frames
     if Tmax == 0:
         raise ValueError(f"No frames found in {traj_path}")
     logging.info(f"Found {Tmax} frames in {traj_path}.")
-
-    ptm_columns = get_ptm_columns()
 
     n_samples = Tmax * N_pick
     all_dist_picked = np.empty((n_samples, nn), dtype=np.float32)
     all_vec_dist_picked = np.empty((n_samples, nn, 3), dtype=np.float32)
     all_w4w6_picked = np.empty((n_samples, 2), dtype=np.float32)
     all_ql_picked = np.empty((n_samples, 20), dtype=np.float32)
-    all_ptm_picked = np.empty((n_samples, len(ptm_columns)), dtype=np.float32)
+    all_ptm_picked = np.empty((n_samples, len(descriptors.ptm_columns)), dtype=np.float32)
 
     total_batches = (Tmax + batch_size - 1) // batch_size
     batch_iter = iter_lammpstrj_batches(traj_path, batch_size)
@@ -238,14 +270,7 @@ if __name__ == "__main__":
             f"with {batch_len} frames ..."
         )
 
-        ql, w4w6, ptm = compute_descriptor_batch(
-            traj_path,
-            batch_start,
-            Config,
-            Box,
-            Natoms,
-            nn,
-        )
+        ql, w4w6, ptm = descriptors.compute(batch_start, Config, Box)
 
         for local_istep in range(batch_len):
             istep = batch_start + local_istep

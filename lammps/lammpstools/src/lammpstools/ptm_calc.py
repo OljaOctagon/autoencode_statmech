@@ -79,6 +79,58 @@ def compute_ptm_from_lammpstrj(
     return ptm_traj_all
 
 
+def compute_ptm_batch_from_pipeline(
+    pipeline,
+    t_start: int,
+    t_max: int,
+    include_deformation_gradient: bool = False,
+):
+    if t_start < 0 or t_start >= pipeline.num_frames:
+        raise ValueError(
+            f"t_start={t_start} is outside trajectory with {pipeline.num_frames} frames"
+        )
+
+    t_max = min(t_max, pipeline.num_frames - t_start)
+    columns = get_ptm_columns(include_deformation_gradient)
+
+    first = pipeline.compute(t_start)
+    natoms = first.particles.count
+    ptm_traj_all = np.empty((t_max, natoms, len(columns)), dtype=np.float32)
+
+    for local_t, global_t in enumerate(range(t_start, t_start + t_max)):
+        if local_t == 0:
+            data = first
+        else:
+            data = pipeline.compute(global_t)
+
+        particles = data.particles
+        structure_type = np.asarray(particles["Structure Type"], dtype=np.float32)
+        rmsd = np.asarray(particles["RMSD"], dtype=np.float32)
+        interatomic_distance = np.asarray(
+            particles["Interatomic Distance"],
+            dtype=np.float32,
+        )
+        orientation = np.asarray(particles["Orientation"], dtype=np.float32)
+
+        out_cols = [
+            structure_type[:, None],
+            rmsd[:, None],
+            interatomic_distance[:, None],
+            orientation,
+        ]
+
+        if include_deformation_gradient:
+            F = np.asarray(
+                particles["Elastic Deformation Gradient"],
+                dtype=np.float32,
+            ).reshape(natoms, 9)
+            out_cols.append(F)
+
+        ptm_traj_all[local_t, :, :] = np.concatenate(out_cols, axis=1)
+
+    return ptm_traj_all
+
+
 def get_ptm_columns(include_deformation_gradient: bool = False):
     columns = [
         "structure_type",
