@@ -9,9 +9,15 @@ from lammpstools.tools import (
     get_nn_vector_one,
 )
 from lammpstools import (
+    compute_cna_batch_from_pipelines,
     compute_cna_trajectory,
     compute_ptm_batch_from_pipeline,
+    compute_ptm_rmsd_by_type_batch,
+    create_cna_pipelines_from_file,
+    create_restricted_ptm_rmsd_pipelines,
     create_ptm_pipeline,
+    parse_ptm_rmsd_type_names,
+    write_denoised_lammpstrj,
 )
 import argparse
 from tqdm import tqdm
@@ -173,7 +179,14 @@ class DescriptorBatchComputer:
     Reuse expensive descriptor setup while keeping the main loop batch-oriented.
     """
 
-    def __init__(self, traj_path, nn, cna_fixed_cutoff):
+    def __init__(
+        self,
+        traj_path,
+        nn,
+        cna_fixed_cutoff,
+        ptm_rmsd_type_names,
+        denoised_traj_path=None,
+    ):
         self.nn = nn
         self.cna_fixed_cutoff = cna_fixed_cutoff
         self.ql_order = freud.order.Steinhardt(
@@ -187,8 +200,46 @@ class DescriptorBatchComputer:
             wl=True,
         )
         self.ptm_pipeline, self.ptm_columns = create_ptm_pipeline(filename=str(traj_path))
+        self.ptm_rmsd_pipelines, self.ptm_rmsd_type_names = (
+            create_restricted_ptm_rmsd_pipelines(
+                filename=str(traj_path),
+                type_names=ptm_rmsd_type_names,
+                rmsd_cutoff=0.0,
+            )
+        )
         self.cna_columns = ["cna_fixed", "cna_adaptive", "cna_interval"]
         self.n_frames = self.ptm_pipeline.num_frames
+        self.denoised_enabled = denoised_traj_path is not None
+
+        if self.denoised_enabled:
+            self.ptm_denoised_pipeline, self.ptm_denoised_columns = create_ptm_pipeline(
+                filename=str(denoised_traj_path)
+            )
+            self.ptm_denoised_rmsd_pipelines, self.ptm_denoised_rmsd_type_names = (
+                create_restricted_ptm_rmsd_pipelines(
+                    filename=str(denoised_traj_path),
+                    type_names=ptm_rmsd_type_names,
+                    rmsd_cutoff=0.0,
+                )
+            )
+            self.cna_denoised_pipelines, self.cna_denoised_columns = (
+                create_cna_pipelines_from_file(
+                    filename=str(denoised_traj_path),
+                    fixed_cutoff=self.cna_fixed_cutoff,
+                    include_fixed=True,
+                    include_adaptive=True,
+                    include_interval=True,
+                )
+            )
+            if self.ptm_denoised_pipeline.num_frames != self.n_frames:
+                raise ValueError(
+                    "Denoised trajectory frame count does not match raw trajectory "
+                    f"({self.ptm_denoised_pipeline.num_frames} != {self.n_frames})."
+                )
+        else:
+            self.ptm_denoised_columns = self.ptm_columns
+            self.ptm_denoised_rmsd_type_names = self.ptm_rmsd_type_names
+            self.cna_denoised_columns = self.cna_columns
 
     def compute(self, batch_start, Config, Box):
         batch_len = len(Config)
@@ -221,6 +272,12 @@ class DescriptorBatchComputer:
             t_max=batch_len,
         )
 
+        ptm_rmsd_by_type = compute_ptm_rmsd_by_type_batch(
+            self.ptm_rmsd_pipelines,
+            t_start=batch_start,
+            t_max=batch_len,
+        )
+
         cna, cna_columns = compute_cna_trajectory(
             Config,
             Box,
@@ -235,7 +292,36 @@ class DescriptorBatchComputer:
         )
         self.cna_columns = cna_columns
 
-        return ql, w4w6, ptm, cna
+        ptm_denoised = None
+        ptm_denoised_rmsd_by_type = None
+        cna_denoised = None
+        if self.denoised_enabled:
+            ptm_denoised = compute_ptm_batch_from_pipeline(
+                self.ptm_denoised_pipeline,
+                t_start=batch_start,
+                t_max=batch_len,
+            )
+            ptm_denoised_rmsd_by_type = compute_ptm_rmsd_by_type_batch(
+                self.ptm_denoised_rmsd_pipelines,
+                t_start=batch_start,
+                t_max=batch_len,
+            )
+            cna_denoised = compute_cna_batch_from_pipelines(
+                self.cna_denoised_pipelines,
+                t_start=batch_start,
+                t_max=batch_len,
+            )
+
+        return (
+            ql,
+            w4w6,
+            ptm,
+            ptm_rmsd_by_type,
+            cna,
+            ptm_denoised,
+            ptm_denoised_rmsd_by_type,
+            cna_denoised,
+        )
 
 
 if __name__ == "__main__":
@@ -252,6 +338,15 @@ if __name__ == "__main__":
     parser.add_argument("-f", default="traj.lammpstrj")
     parser.add_argument("-batch", default=5)
     parser.add_argument("-cna_cutoff", default=1.5)
+    parser.add_argument("-ptm_rmsd_types", default="fcc,hcp,bcc,ico")
+    parser.add_argument("-denoise", action="store_true")
+    parser.add_argument("-denoise_structure", default="FCC")
+    parser.add_argument("-denoise_steps", default=8)
+    parser.add_argument("-denoise_device", default="cpu")
+    parser.add_argument("-denoise_scale", default=None)
+    parser.add_argument("-denoise_model_path", default=None)
+    parser.add_argument("-denoise_tmp", default=None)
+    parser.add_argument("-keep_denoised_traj", action="store_true")
 
     args = parser.parse_args()
     # number of particles to pick per frame
@@ -261,9 +356,41 @@ if __name__ == "__main__":
     Min_distance = 5
     batch_size = int(args.batch)
     cna_fixed_cutoff = float(args.cna_cutoff)
+    ptm_rmsd_type_names = parse_ptm_rmsd_type_names(args.ptm_rmsd_types)
 
     traj_path = Path(args.f)
-    descriptors = DescriptorBatchComputer(traj_path, nn, cna_fixed_cutoff)
+    denoised_traj_path = None
+    if args.denoise:
+        if args.denoise_tmp is None:
+            denoised_traj_path = traj_path.with_name(
+                f"{traj_path.stem}_denoised_{args.denoise_structure.lower()}.lammpstrj"
+            )
+        else:
+            denoised_traj_path = Path(args.denoise_tmp)
+        logging.info(
+            "Writing denoised trajectory to %s using structure=%s, steps=%s, device=%s.",
+            denoised_traj_path,
+            args.denoise_structure,
+            args.denoise_steps,
+            args.denoise_device,
+        )
+        write_denoised_lammpstrj(
+            input_filename=traj_path,
+            output_filename=denoised_traj_path,
+            structure=args.denoise_structure,
+            steps=int(args.denoise_steps),
+            device=args.denoise_device,
+            scale=None if args.denoise_scale is None else float(args.denoise_scale),
+            model_path=args.denoise_model_path,
+        )
+
+    descriptors = DescriptorBatchComputer(
+        traj_path,
+        nn,
+        cna_fixed_cutoff,
+        ptm_rmsd_type_names,
+        denoised_traj_path=denoised_traj_path,
+    )
     Tmax = descriptors.n_frames
     if Tmax == 0:
         raise ValueError(f"No frames found in {traj_path}")
@@ -275,7 +402,24 @@ if __name__ == "__main__":
     all_w4w6_picked = np.empty((n_samples, 2), dtype=np.float32)
     all_ql_picked = np.empty((n_samples, 20), dtype=np.float32)
     all_ptm_picked = np.empty((n_samples, len(descriptors.ptm_columns)), dtype=np.float32)
+    all_ptm_rmsd_by_type_picked = np.empty(
+        (n_samples, len(descriptors.ptm_rmsd_type_names)),
+        dtype=np.float32,
+    )
     all_cna_picked = np.empty((n_samples, len(descriptors.cna_columns)), dtype=np.int8)
+    if descriptors.denoised_enabled:
+        all_ptm_denoised_picked = np.empty(
+            (n_samples, len(descriptors.ptm_denoised_columns)),
+            dtype=np.float32,
+        )
+        all_ptm_denoised_rmsd_by_type_picked = np.empty(
+            (n_samples, len(descriptors.ptm_denoised_rmsd_type_names)),
+            dtype=np.float32,
+        )
+        all_cna_denoised_picked = np.empty(
+            (n_samples, len(descriptors.cna_denoised_columns)),
+            dtype=np.int8,
+        )
 
     total_batches = (Tmax + batch_size - 1) // batch_size
     batch_iter = iter_lammpstrj_batches(traj_path, batch_size)
@@ -290,7 +434,20 @@ if __name__ == "__main__":
             f"with {batch_len} frames ..."
         )
 
-        ql, w4w6, ptm, cna = descriptors.compute(batch_start, Config, Box)
+        (
+            ql,
+            w4w6,
+            ptm,
+            ptm_rmsd_by_type,
+            cna,
+            ptm_denoised,
+            ptm_denoised_rmsd_by_type,
+            cna_denoised,
+        ) = descriptors.compute(
+            batch_start,
+            Config,
+            Box,
+        )
 
         for local_istep in range(batch_len):
             istep = batch_start + local_istep
@@ -326,23 +483,66 @@ if __name__ == "__main__":
             all_w4w6_picked[start:stop] = w4w6[local_istep, picked_ids, :]
             all_ql_picked[start:stop] = ql[local_istep, picked_ids, :]
             all_ptm_picked[start:stop] = ptm[local_istep, picked_ids, :]
+            all_ptm_rmsd_by_type_picked[start:stop] = ptm_rmsd_by_type[
+                local_istep,
+                picked_ids,
+                :,
+            ]
             all_cna_picked[start:stop] = cna[local_istep, picked_ids, :]
+            if descriptors.denoised_enabled:
+                all_ptm_denoised_picked[start:stop] = ptm_denoised[
+                    local_istep,
+                    picked_ids,
+                    :,
+                ]
+                all_ptm_denoised_rmsd_by_type_picked[start:stop] = (
+                    ptm_denoised_rmsd_by_type[
+                        local_istep,
+                        picked_ids,
+                        :,
+                    ]
+                )
+                all_cna_denoised_picked[start:stop] = cna_denoised[
+                    local_istep,
+                    picked_ids,
+                    :,
+                ]
 
             del Config_i, dist_picked, vec_dist_picked
 
-        del Config, Box, ql, w4w6, ptm, cna
+        del Config, Box, ql, w4w6, ptm, ptm_rmsd_by_type, cna
+        if descriptors.denoised_enabled:
+            del ptm_denoised, ptm_denoised_rmsd_by_type, cna_denoised
         gc.collect()
 
     # Save to disk as compressed npz
     logging.info("Saving picked particle data to particle_data.npz ...")
-    np.savez_compressed(
-        "particle_data.npz",
-        dist=all_dist_picked,
-        vec_dist=all_vec_dist_picked,
-        w4w6=all_w4w6_picked,
-        ql=all_ql_picked,
-        ptm=all_ptm_picked,
-        cna=all_cna_picked,
-        cna_columns=np.array(descriptors.cna_columns),
-    )
+    save_data = {
+        "dist": all_dist_picked,
+        "vec_dist": all_vec_dist_picked,
+        "w4w6": all_w4w6_picked,
+        "ql": all_ql_picked,
+        "ptm": all_ptm_picked,
+        "ptm_rmsd_by_type": all_ptm_rmsd_by_type_picked,
+        "ptm_rmsd_type_names": np.array(descriptors.ptm_rmsd_type_names),
+        "cna": all_cna_picked,
+        "cna_columns": np.array(descriptors.cna_columns),
+    }
+    if descriptors.denoised_enabled:
+        save_data.update(
+            {
+                "ptm_denoised": all_ptm_denoised_picked,
+                "ptm_denoised_rmsd_by_type": all_ptm_denoised_rmsd_by_type_picked,
+                "ptm_denoised_rmsd_type_names": np.array(
+                    descriptors.ptm_denoised_rmsd_type_names
+                ),
+                "cna_denoised": all_cna_denoised_picked,
+                "cna_denoised_columns": np.array(descriptors.cna_denoised_columns),
+                "denoise_structure": np.array(args.denoise_structure),
+                "denoise_steps": np.array(int(args.denoise_steps)),
+            }
+        )
+    np.savez_compressed("particle_data.npz", **save_data)
+    if args.denoise and not args.keep_denoised_traj:
+        denoised_traj_path.unlink(missing_ok=True)
     logging.info("Done.")

@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from ovito.data import DataCollection, SimulationCell
+from ovito.io import import_file
 from ovito.pipeline import Pipeline, StaticSource
 from ovito.modifiers import CommonNeighborAnalysisModifier
 
@@ -102,6 +103,46 @@ def _compute_cna_trajectory(
         Natoms = Config.shape[1]
     Natoms = int(Natoms)
 
+    modes, columns = _make_cna_modes(
+        fixed_cutoff=fixed_cutoff,
+        include_fixed=include_fixed,
+        include_adaptive=include_adaptive,
+        include_interval=include_interval,
+    )
+
+    cna_traj_all = np.empty((t_max, Natoms, len(modes)), dtype=np.int8)
+
+    for t in range(t_max):
+        frame_data = _make_ovito_data_from_frame(
+            positions=Config[t],
+            box_lengths=Box[t],
+            fractional=fractional,
+        )
+
+        for mode_idx, (_, modifier) in enumerate(modes):
+            pipeline = Pipeline(source=StaticSource(data=frame_data))
+            pipeline.modifiers.append(modifier)
+
+            result = pipeline.compute()
+            structure_type = np.asarray(
+                result.particles["Structure Type"],
+                dtype=np.int8,
+            )
+
+            cna_traj_all[t, :, mode_idx] = structure_type
+
+    if return_columns:
+        return cna_traj_all, columns
+
+    return cna_traj_all
+
+
+def _make_cna_modes(
+    fixed_cutoff: Optional[float] = None,
+    include_fixed: bool = True,
+    include_adaptive: bool = True,
+    include_interval: bool = True,
+):
     modes = []
     columns = []
 
@@ -146,31 +187,64 @@ def _compute_cna_trajectory(
     if not modes:
         raise ValueError("At least one CNA mode must be enabled.")
 
-    cna_traj_all = np.empty((t_max, Natoms, len(modes)), dtype=np.int8)
+    return modes, columns
 
-    for t in range(t_max):
-        frame_data = _make_ovito_data_from_frame(
-            positions=Config[t],
-            box_lengths=Box[t],
-            fractional=fractional,
+
+def create_cna_pipelines_from_file(
+    filename: str,
+    fixed_cutoff: Optional[float] = None,
+    include_fixed: bool = True,
+    include_adaptive: bool = True,
+    include_interval: bool = True,
+):
+    modes, columns = _make_cna_modes(
+        fixed_cutoff=fixed_cutoff,
+        include_fixed=include_fixed,
+        include_adaptive=include_adaptive,
+        include_interval=include_interval,
+    )
+    pipelines = []
+
+    for _, modifier in modes:
+        pipeline = import_file(filename, multiple_frames=True)
+        pipeline.modifiers.append(modifier)
+        pipelines.append(pipeline)
+
+    return pipelines, columns
+
+
+def compute_cna_batch_from_pipelines(
+    pipelines,
+    t_start: int,
+    t_max: int,
+):
+    if not pipelines:
+        return None
+
+    first_pipeline = pipelines[0]
+    if t_start < 0 or t_start >= first_pipeline.num_frames:
+        raise ValueError(
+            f"t_start={t_start} is outside trajectory with {first_pipeline.num_frames} frames"
         )
 
-        for mode_idx, (_, modifier) in enumerate(modes):
-            pipeline = Pipeline(source=StaticSource(data=frame_data))
-            pipeline.modifiers.append(modifier)
+    t_max = min(t_max, first_pipeline.num_frames - t_start)
+    first = first_pipeline.compute(t_start)
+    natoms = first.particles.count
+    cna = np.empty((t_max, natoms, len(pipelines)), dtype=np.int8)
 
-            result = pipeline.compute()
-            structure_type = np.asarray(
-                result.particles["Structure Type"],
+    for mode_idx, pipeline in enumerate(pipelines):
+        for local_t, global_t in enumerate(range(t_start, t_start + t_max)):
+            if mode_idx == 0 and local_t == 0:
+                data = first
+            else:
+                data = pipeline.compute(global_t)
+
+            cna[local_t, :, mode_idx] = np.asarray(
+                data.particles["Structure Type"],
                 dtype=np.int8,
             )
 
-            cna_traj_all[t, :, mode_idx] = structure_type
-
-    if return_columns:
-        return cna_traj_all, columns
-
-    return cna_traj_all
+    return cna
 
 
 def compute_cna_trajectory(*args, **kwargs):
