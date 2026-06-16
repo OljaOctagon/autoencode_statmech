@@ -199,6 +199,11 @@ class DescriptorBatchComputer:
             average=True,
             wl=True,
         )
+        self.w4w6_no_average_order = freud.order.Steinhardt(
+            l=[4, 6],
+            average=False,
+            wl=True,
+        )
         self.ptm_pipeline, self.ptm_columns = create_ptm_pipeline(filename=str(traj_path))
         self.ptm_rmsd_pipelines, self.ptm_rmsd_type_names = (
             create_restricted_ptm_rmsd_pipelines(
@@ -247,6 +252,7 @@ class DescriptorBatchComputer:
 
         ql = np.empty((batch_len, natoms, 20), dtype=np.float32)
         w4w6 = np.empty((batch_len, natoms, 2), dtype=np.float32)
+        w4w6_no_average = np.empty((batch_len, natoms, 2), dtype=np.float32)
 
         for local_t in range(batch_len):
             positions = np.asarray(Config[local_t], dtype=np.float32)
@@ -265,6 +271,12 @@ class DescriptorBatchComputer:
                 neighbors={"num_neighbors": self.nn},
             )
             w4w6[local_t] = self.w4w6_order.particle_order
+
+            self.w4w6_no_average_order.compute(
+                system=(freud_box, positions),
+                neighbors={"num_neighbors": self.nn},
+            )
+            w4w6_no_average[local_t] = self.w4w6_no_average_order.particle_order
 
         ptm = compute_ptm_batch_from_pipeline(
             self.ptm_pipeline,
@@ -315,6 +327,7 @@ class DescriptorBatchComputer:
         return (
             ql,
             w4w6,
+            w4w6_no_average,
             ptm,
             ptm_rmsd_by_type,
             cna,
@@ -346,6 +359,7 @@ if __name__ == "__main__":
     parser.add_argument("-denoise_scale", default=None)
     parser.add_argument("-denoise_model_path", default=None)
     parser.add_argument("-denoise_tmp", default=None)
+    parser.add_argument("-denoised_traj", default=None)
     parser.add_argument("-keep_denoised_traj", action="store_true")
 
     args = parser.parse_args()
@@ -360,7 +374,10 @@ if __name__ == "__main__":
 
     traj_path = Path(args.f)
     denoised_traj_path = None
-    if args.denoise:
+    if args.denoised_traj is not None:
+        denoised_traj_path = Path(args.denoised_traj)
+        logging.info("Using existing denoised trajectory %s.", denoised_traj_path)
+    elif args.denoise:
         if args.denoise_tmp is None:
             denoised_traj_path = traj_path.with_name(
                 f"{traj_path.stem}_denoised_{args.denoise_structure.lower()}.lammpstrj"
@@ -400,8 +417,11 @@ if __name__ == "__main__":
     all_dist_picked = np.empty((n_samples, nn), dtype=np.float32)
     all_vec_dist_picked = np.empty((n_samples, nn, 3), dtype=np.float32)
     all_w4w6_picked = np.empty((n_samples, 2), dtype=np.float32)
+    all_w4w6_no_average_picked = np.empty((n_samples, 2), dtype=np.float32)
     all_ql_picked = np.empty((n_samples, 20), dtype=np.float32)
     all_ptm_picked = np.empty((n_samples, len(descriptors.ptm_columns)), dtype=np.float32)
+    all_picked_ids = np.empty(n_samples, dtype=np.int32)
+    all_frame_indices = np.empty(n_samples, dtype=np.int32)
     all_ptm_rmsd_by_type_picked = np.empty(
         (n_samples, len(descriptors.ptm_rmsd_type_names)),
         dtype=np.float32,
@@ -437,6 +457,7 @@ if __name__ == "__main__":
         (
             ql,
             w4w6,
+            w4w6_no_average,
             ptm,
             ptm_rmsd_by_type,
             cna,
@@ -481,8 +502,15 @@ if __name__ == "__main__":
             all_dist_picked[start:stop] = dist_picked
             all_vec_dist_picked[start:stop] = vec_dist_picked
             all_w4w6_picked[start:stop] = w4w6[local_istep, picked_ids, :]
+            all_w4w6_no_average_picked[start:stop] = w4w6_no_average[
+                local_istep,
+                picked_ids,
+                :,
+            ]
             all_ql_picked[start:stop] = ql[local_istep, picked_ids, :]
             all_ptm_picked[start:stop] = ptm[local_istep, picked_ids, :]
+            all_picked_ids[start:stop] = picked_ids
+            all_frame_indices[start:stop] = istep
             all_ptm_rmsd_by_type_picked[start:stop] = ptm_rmsd_by_type[
                 local_istep,
                 picked_ids,
@@ -510,7 +538,7 @@ if __name__ == "__main__":
 
             del Config_i, dist_picked, vec_dist_picked
 
-        del Config, Box, ql, w4w6, ptm, ptm_rmsd_by_type, cna
+        del Config, Box, ql, w4w6, w4w6_no_average, ptm, ptm_rmsd_by_type, cna
         if descriptors.denoised_enabled:
             del ptm_denoised, ptm_denoised_rmsd_by_type, cna_denoised
         gc.collect()
@@ -521,8 +549,13 @@ if __name__ == "__main__":
         "dist": all_dist_picked,
         "vec_dist": all_vec_dist_picked,
         "w4w6": all_w4w6_picked,
+        "w4w6_no_average": all_w4w6_no_average_picked,
         "ql": all_ql_picked,
         "ptm": all_ptm_picked,
+        "picked_ids": all_picked_ids,
+        "frame_indices": all_frame_indices,
+        "n_pick": np.array(N_pick),
+        "nn": np.array(nn),
         "ptm_rmsd_by_type": all_ptm_rmsd_by_type_picked,
         "ptm_rmsd_type_names": np.array(descriptors.ptm_rmsd_type_names),
         "cna": all_cna_picked,
@@ -543,6 +576,6 @@ if __name__ == "__main__":
             }
         )
     np.savez_compressed("particle_data.npz", **save_data)
-    if args.denoise and not args.keep_denoised_traj:
+    if args.denoise and args.denoised_traj is None and not args.keep_denoised_traj:
         denoised_traj_path.unlink(missing_ok=True)
     logging.info("Done.")
