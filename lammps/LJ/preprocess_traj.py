@@ -194,6 +194,11 @@ class DescriptorBatchComputer:
             average=True,
             wl=False,
         )
+        self.ql_no_average_order = freud.order.Steinhardt(
+            l=list(range(1, 21)),
+            average=False,
+            wl=False,
+        )
         self.w4w6_order = freud.order.Steinhardt(
             l=[4, 6],
             average=True,
@@ -251,6 +256,7 @@ class DescriptorBatchComputer:
         natoms = Config.shape[1]
 
         ql = np.empty((batch_len, natoms, 20), dtype=np.float32)
+        ql_no_average = np.empty((batch_len, natoms, 20), dtype=np.float32)
         w4w6 = np.empty((batch_len, natoms, 2), dtype=np.float32)
         w4w6_no_average = np.empty((batch_len, natoms, 2), dtype=np.float32)
 
@@ -265,6 +271,12 @@ class DescriptorBatchComputer:
                 neighbors={"num_neighbors": self.nn},
             )
             ql[local_t] = self.ql_order.particle_order
+
+            self.ql_no_average_order.compute(
+                system=(freud_box, positions),
+                neighbors={"num_neighbors": self.nn},
+            )
+            ql_no_average[local_t] = self.ql_no_average_order.particle_order
 
             self.w4w6_order.compute(
                 system=(freud_box, positions),
@@ -326,6 +338,7 @@ class DescriptorBatchComputer:
 
         return (
             ql,
+            ql_no_average,
             w4w6,
             w4w6_no_average,
             ptm,
@@ -419,6 +432,7 @@ if __name__ == "__main__":
     all_w4w6_picked = np.empty((n_samples, 2), dtype=np.float32)
     all_w4w6_no_average_picked = np.empty((n_samples, 2), dtype=np.float32)
     all_ql_picked = np.empty((n_samples, 20), dtype=np.float32)
+    all_ql_no_average_picked = np.empty((n_samples, 20), dtype=np.float32)
     all_ptm_picked = np.empty((n_samples, len(descriptors.ptm_columns)), dtype=np.float32)
     all_picked_ids = np.empty(n_samples, dtype=np.int32)
     all_frame_indices = np.empty(n_samples, dtype=np.int32)
@@ -456,6 +470,7 @@ if __name__ == "__main__":
 
         (
             ql,
+            ql_no_average,
             w4w6,
             w4w6_no_average,
             ptm,
@@ -508,6 +523,7 @@ if __name__ == "__main__":
                 :,
             ]
             all_ql_picked[start:stop] = ql[local_istep, picked_ids, :]
+            all_ql_no_average_picked[start:stop] = ql_no_average[local_istep, picked_ids, :]
             all_ptm_picked[start:stop] = ptm[local_istep, picked_ids, :]
             all_picked_ids[start:stop] = picked_ids
             all_frame_indices[start:stop] = istep
@@ -538,7 +554,7 @@ if __name__ == "__main__":
 
             del Config_i, dist_picked, vec_dist_picked
 
-        del Config, Box, ql, w4w6, w4w6_no_average, ptm, ptm_rmsd_by_type, cna
+        del Config, Box, ql, ql_no_average, w4w6, w4w6_no_average, ptm, ptm_rmsd_by_type, cna
         if descriptors.denoised_enabled:
             del ptm_denoised, ptm_denoised_rmsd_by_type, cna_denoised
         gc.collect()
@@ -551,6 +567,7 @@ if __name__ == "__main__":
         "w4w6": all_w4w6_picked,
         "w4w6_no_average": all_w4w6_no_average_picked,
         "ql": all_ql_picked,
+        "ql_no_average": all_ql_no_average_picked,
         "ptm": all_ptm_picked,
         "picked_ids": all_picked_ids,
         "frame_indices": all_frame_indices,
