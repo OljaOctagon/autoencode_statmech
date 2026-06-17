@@ -11,6 +11,7 @@ def write_denoised_lammpstrj(
     device="cpu",
     scale=None,
     model_path=None,
+    start_frame=0,
 ):
     """
     Apply the OVITO score-based denoiser once and write a denoised trajectory.
@@ -50,6 +51,7 @@ def write_denoised_lammpstrj(
         output_filename,
         "lammps/dump",
         multiple_frames=True,
+        start_frame=int(start_frame),
         columns=[
             "Particle Identifier",
             "Particle Type",
