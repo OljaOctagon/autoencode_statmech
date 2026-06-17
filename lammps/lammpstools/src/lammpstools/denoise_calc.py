@@ -12,6 +12,7 @@ def write_denoised_lammpstrj(
     scale=None,
     model_path=None,
     start_frame=0,
+    end_frame=None,
 ):
     """
     Apply the OVITO score-based denoiser once and write a denoised trajectory.
@@ -46,19 +47,20 @@ def write_denoised_lammpstrj(
     pipeline.modifiers.append(denoiser)
 
     Path(output_filename).parent.mkdir(parents=True, exist_ok=True)
-    export_file(
-        pipeline,
-        output_filename,
-        "lammps/dump",
-        multiple_frames=True,
-        start_frame=int(start_frame),
-        columns=[
+    export_kwargs = {
+        "multiple_frames": True,
+        "start_frame": int(start_frame),
+        "columns": [
             "Particle Identifier",
             "Particle Type",
             "Position.X",
             "Position.Y",
             "Position.Z",
         ],
-    )
+    }
+    if end_frame is not None:
+        export_kwargs["end_frame"] = int(end_frame)
+
+    export_file(pipeline, output_filename, "lammps/dump", **export_kwargs)
 
     return Path(output_filename)

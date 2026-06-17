@@ -46,6 +46,27 @@ def append_file(src, dst):
             dst_file.write(src_file.read())
 
 
+def append_complete_frames(src, dst, expected_new_frames):
+    src_frames, src_offset = count_complete_lammpstrj_frames(src)
+    src_size = src.stat().st_size
+    if src_frames != expected_new_frames or src_offset != src_size:
+        raise RuntimeError(
+            f"Temporary output {src} has {src_frames}/{expected_new_frames} "
+            "complete frames."
+        )
+
+    original_size = dst.stat().st_size if dst.exists() else 0
+    try:
+        append_file(src, dst)
+        with open(dst, "a+b") as dst_file:
+            dst_file.flush()
+            os.fsync(dst_file.fileno())
+    except Exception:
+        with open(dst, "r+b") as dst_file:
+            dst_file.truncate(original_size)
+        raise
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
@@ -57,6 +78,12 @@ if __name__ == "__main__":
     parser.add_argument("-device", default="cpu")
     parser.add_argument("-scale", default=None)
     parser.add_argument("-model_path", default=None)
+    parser.add_argument(
+        "-resume_chunk_size",
+        default=1,
+        type=int,
+        help="Number of frames to denoise before appending progress to the output.",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.f)
@@ -83,28 +110,32 @@ if __name__ == "__main__":
             with open(output_path, "r+b") as output_file:
                 output_file.truncate(output_offset)
 
+    resume_chunk_size = max(1, int(args.resume_chunk_size))
+
     if resume_frame >= input_frames:
         logging.info(
             "Denoised trajectory already has %s/%s frames; nothing to do.",
             resume_frame,
             input_frames,
         )
-    elif resume_frame == 0:
-        write_denoised_lammpstrj(
-            input_filename=input_path,
-            output_filename=output_path,
-            structure=args.structure,
-            steps=int(args.steps),
-            device=args.device,
-            scale=None if args.scale is None else float(args.scale),
-            model_path=args.model_path,
-        )
     else:
-        tmp_output_path = output_path.with_name(
-            f".{output_path.name}.resume.{os.getpid()}.tmp"
-        )
-        try:
+        if resume_frame > 0:
             logging.info("Resuming from frame %s/%s.", resume_frame, input_frames)
+
+        next_frame = resume_frame
+        while next_frame < input_frames:
+            chunk_start = next_frame
+            chunk_end = min(input_frames - 1, chunk_start + resume_chunk_size - 1)
+            chunk_frames = chunk_end - chunk_start + 1
+            tmp_output_path = output_path.with_name(
+                f".{output_path.name}.frames.{chunk_start}-{chunk_end}.{os.getpid()}.tmp"
+            )
+            logging.info(
+                "Denoising frames %s-%s/%s.",
+                chunk_start,
+                chunk_end,
+                input_frames - 1,
+            )
             write_denoised_lammpstrj(
                 input_filename=input_path,
                 output_filename=tmp_output_path,
@@ -113,9 +144,11 @@ if __name__ == "__main__":
                 device=args.device,
                 scale=None if args.scale is None else float(args.scale),
                 model_path=args.model_path,
-                start_frame=resume_frame,
+                start_frame=chunk_start,
+                end_frame=chunk_end,
             )
-            append_file(tmp_output_path, output_path)
-        finally:
+            append_complete_frames(tmp_output_path, output_path, chunk_frames)
             tmp_output_path.unlink(missing_ok=True)
+            next_frame = chunk_end + 1
+            logging.info("Denoised trajectory now has %s/%s frames.", next_frame, input_frames)
     logging.info("Done.")
