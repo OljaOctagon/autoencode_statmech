@@ -362,6 +362,7 @@ if __name__ == "__main__":
     parser.add_argument("-npick")
     parser.add_argument("-nn", default=12)
     parser.add_argument("-f", default="traj.lammpstrj")
+    parser.add_argument("-o", default="particle_data.npz")
     parser.add_argument("-batch", default=5)
     parser.add_argument("-cna_cutoff", default=1.5)
     parser.add_argument("-ptm_rmsd_types", default="fcc,hcp,bcc,ico")
@@ -560,7 +561,7 @@ if __name__ == "__main__":
         gc.collect()
 
     # Save to disk as compressed npz
-    logging.info("Saving picked particle data to particle_data.npz ...")
+    logging.info(f"Saving picked particle data to {args.o} ...")
     save_data = {
         "dist": all_dist_picked,
         "vec_dist": all_vec_dist_picked,
@@ -592,7 +593,7 @@ if __name__ == "__main__":
                 "denoise_steps": np.array(int(args.denoise_steps)),
             }
         )
-    np.savez_compressed("particle_data.npz", **save_data)
+    np.savez_compressed(args.o, **save_data)
     if args.denoise and args.denoised_traj is None and not args.keep_denoised_traj:
         denoised_traj_path.unlink(missing_ok=True)
     logging.info("Done.")
