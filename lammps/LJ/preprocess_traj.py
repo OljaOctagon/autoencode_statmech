@@ -183,11 +183,13 @@ class DescriptorBatchComputer:
         self,
         traj_path,
         nn,
+        descriptor_nn,
         cna_fixed_cutoff,
         ptm_rmsd_type_names,
         denoised_traj_path=None,
     ):
         self.nn = nn
+        self.descriptor_nn = descriptor_nn
         self.cna_fixed_cutoff = cna_fixed_cutoff
         self.ql_order = freud.order.Steinhardt(
             l=list(range(1, 21)),
@@ -268,25 +270,25 @@ class DescriptorBatchComputer:
 
             self.ql_order.compute(
                 system=(freud_box, positions),
-                neighbors={"num_neighbors": self.nn},
+                neighbors={"num_neighbors": self.descriptor_nn},
             )
             ql[local_t] = self.ql_order.particle_order
 
             self.ql_no_average_order.compute(
                 system=(freud_box, positions),
-                neighbors={"num_neighbors": self.nn},
+                neighbors={"num_neighbors": self.descriptor_nn},
             )
             ql_no_average[local_t] = self.ql_no_average_order.particle_order
 
             self.w4w6_order.compute(
                 system=(freud_box, positions),
-                neighbors={"num_neighbors": self.nn},
+                neighbors={"num_neighbors": self.descriptor_nn},
             )
             w4w6[local_t] = self.w4w6_order.particle_order
 
             self.w4w6_no_average_order.compute(
                 system=(freud_box, positions),
-                neighbors={"num_neighbors": self.nn},
+                neighbors={"num_neighbors": self.descriptor_nn},
             )
             w4w6_no_average[local_t] = self.w4w6_no_average_order.particle_order
 
@@ -361,6 +363,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-npick")
     parser.add_argument("-nn", default=12)
+    parser.add_argument("-descriptor_nn", default=None)
+    parser.add_argument("-picked_ids_from", default=None)
+    parser.add_argument("-seed", default=None)
     parser.add_argument("-f", default="traj.lammpstrj")
     parser.add_argument("-o", default="particle_data.npz")
     parser.add_argument("-batch", default=5)
@@ -380,6 +385,9 @@ if __name__ == "__main__":
     # number of particles to pick per frame
     N_pick = int(args.npick)
     nn = int(args.nn)
+    descriptor_nn = nn if args.descriptor_nn is None else int(args.descriptor_nn)
+    if args.seed is not None:
+        np.random.seed(int(args.seed))
     # nb this is 5 diameters distance (i.e LJ units)
     Min_distance = 5
     batch_size = int(args.batch)
@@ -418,6 +426,7 @@ if __name__ == "__main__":
     descriptors = DescriptorBatchComputer(
         traj_path,
         nn,
+        descriptor_nn,
         cna_fixed_cutoff,
         ptm_rmsd_type_names,
         denoised_traj_path=denoised_traj_path,
@@ -428,6 +437,26 @@ if __name__ == "__main__":
     logging.info(f"Found {Tmax} frames in {traj_path}.")
 
     n_samples = Tmax * N_pick
+    picked_ids_source = None
+    picked_frame_indices_source = None
+    if args.picked_ids_from is not None:
+        picked_ids_path = Path(args.picked_ids_from)
+        logging.info("Reusing picked particle ids from %s.", picked_ids_path)
+        with np.load(picked_ids_path, allow_pickle=True) as picked_data:
+            picked_source_n_pick = int(np.asarray(picked_data["n_pick"]).item())
+            if picked_source_n_pick != N_pick:
+                raise ValueError(
+                    f"picked_ids_from has n_pick={picked_source_n_pick}, "
+                    f"but this run uses npick={N_pick}."
+                )
+            picked_ids_source = picked_data["picked_ids"].astype(np.int32)
+            picked_frame_indices_source = picked_data["frame_indices"].astype(np.int32)
+        if picked_ids_source.shape[0] != n_samples:
+            raise ValueError(
+                "picked_ids_from sample count does not match this trajectory and npick "
+                f"({picked_ids_source.shape[0]} != {n_samples})."
+            )
+
     all_dist_picked = np.empty((n_samples, nn), dtype=np.float32)
     all_vec_dist_picked = np.empty((n_samples, nn, 3), dtype=np.float32)
     all_w4w6_picked = np.empty((n_samples, 2), dtype=np.float32)
@@ -493,14 +522,26 @@ if __name__ == "__main__":
             Box_i = Box[local_istep]
 
             # obtain picked particle ids for this frame
-            logging.info("    Picking particles ...")
-            picked_ids = pick_particles(
-                N_pick,
-                Natoms,
-                Config_i,
-                Box_i,
-                Min_distance=Min_distance,
-            )
+            start = istep * N_pick
+            stop = start + N_pick
+            if picked_ids_source is None:
+                logging.info("    Picking particles ...")
+                picked_ids = pick_particles(
+                    N_pick,
+                    Natoms,
+                    Config_i,
+                    Box_i,
+                    Min_distance=Min_distance,
+                )
+            else:
+                logging.info("    Reusing picked particles ...")
+                picked_ids = picked_ids_source[start:stop]
+                expected_frames = picked_frame_indices_source[start:stop]
+                if not np.all(expected_frames == istep):
+                    raise ValueError(
+                        "picked_ids_from frame_indices are not grouped as expected "
+                        f"for frame {istep}."
+                    )
             # obtain nearest neighbor distances and vectors for picked particles only
             logging.info(
                 "    Computing nearest neighbor distances and vectors for picked particles ..."
@@ -511,9 +552,6 @@ if __name__ == "__main__":
                 vec = get_nn_vector_one(pid, Config_i, Box_i, nn)
                 vec_dist_picked[local_idx] = vec
                 dist_picked[local_idx] = np.sqrt(np.sum(vec * vec, axis=1))
-
-            start = istep * N_pick
-            stop = start + N_pick
 
             all_dist_picked[start:stop] = dist_picked
             all_vec_dist_picked[start:stop] = vec_dist_picked
@@ -574,6 +612,7 @@ if __name__ == "__main__":
         "frame_indices": all_frame_indices,
         "n_pick": np.array(N_pick),
         "nn": np.array(nn),
+        "descriptor_nn": np.array(descriptor_nn),
         "ptm_rmsd_by_type": all_ptm_rmsd_by_type_picked,
         "ptm_rmsd_type_names": np.array(descriptors.ptm_rmsd_type_names),
         "cna": all_cna_picked,
