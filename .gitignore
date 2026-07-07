@@ -17,6 +17,11 @@ particle_data_seq*.npz
 lammps/LJ/statistically_independent_samples/statistically_independent_samples/fcc/
 lammps/LJ/statistically_independent_samples/statistically_independent_samples/hcp/
 lammps/LJ/statistically_independent_samples/statistically_independent_samples/liquid/
+lammps/LJ/statistically_independent_samples/statistically_independent_samples/other_data/*
+!lammps/LJ/statistically_independent_samples/statistically_independent_samples/other_data/README.md
+!lammps/LJ/statistically_independent_samples/statistically_independent_samples/other_data/download_q_ls_hard_data.py
+!lammps/LJ/statistically_independent_samples/statistically_independent_samples/other_data/inspect_martirossyan_complex_crystals.ipynb
+!lammps/LJ/statistically_independent_samples/statistically_independent_samples/other_data/inspect_noisy_simple_crystals.ipynb
 
 # LAMMPS trajectory/output files
 *.lammpstrj
