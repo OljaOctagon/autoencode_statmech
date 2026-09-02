@@ -1,0 +1,128 @@
+# ============================================================
+# Lennard-Jones HCP crystal
+# Gentle pressure-driven melting, matched to the FCC run
+#
+# Protocol:
+#   1. Create and minimize HCP at rho* = 1.2
+#   2. Initialize velocities and equilibrate at T* = 1, P* = 8
+#   3. Slowly decompress from P* = 8 to P* = 1 at T* = 1
+#
+# Total duration: 200,000 + 1,000,000 = 1,200,000 steps
+# With dt* = 0.005 this is 6,000 reduced time units.
+# ============================================================
+
+clear
+log             melting.log
+
+units           lj
+dimension       3
+boundary        p p p
+atom_style      atomic
+timestep        0.005
+
+pair_style      lj/cut 2.5
+
+# Keep these as index variables so short smoke tests can override
+# them with: lmp -var equil_steps 0 -var ramp_steps 0 -in in.lj
+variable        equil_steps index 200000
+variable        ramp_steps  index 1000000
+
+# Ideal HCP cell at the same initial number density as the FCC run.
+lattice         hcp 1.2                  &
+                orient x 1 0 0           &
+                orient y 0 1 0           &
+                orient z 0 0 1
+
+variable        nx equal 10
+variable        ny equal 10
+variable        nz equal 10
+region          box block 0 ${nx} 0 ${ny} 0 ${nz} units lattice
+create_box      1 box
+create_atoms    1 box
+
+mass            1 1.0
+pair_coeff      1 1 1.0 1.0
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+# Relax the ideal lattice, then make the production timeline start at zero.
+thermo          100
+thermo_style    custom step atoms temp press pe etotal vol density
+min_style       cg
+minimize        1.0e-8 1.0e-10 10000 100000
+reset_timestep  0
+
+# Starting from zero velocity made the old Langevin run unnecessarily abrupt.
+velocity        all create 1.0 10917 mom yes rot no dist gaussian
+
+# Match the FCC observable: local Q6 from the 12 nearest neighbors.
+compute         poteng all pe/atom
+compute         orient all orientorder/atom     &
+                degrees 1 6                     &
+                nnn 12                          &
+                cutoff 2.0
+compute         Q6 all reduce ave c_orient[1]
+
+variable        temperature equal temp
+variable        pressure    equal press
+variable        potential   equal pe
+variable        volume      equal vol
+variable        rho         equal density
+
+thermo          1000
+thermo_style    custom step temp press pe ke etotal vol density c_Q6
+
+# Rich table for diagnosing the transition.
+fix             observables all ave/time        &
+                100 10 1000                     &
+                v_temperature                    &
+                v_pressure                       &
+                v_potential                      &
+                v_volume                         &
+                v_rho                            &
+                c_Q6                             &
+                file melting_observables.dat
+
+# Retain the compact two-column file expected by the analysis notebook.
+fix             q6_output all ave/time          &
+                100 10 1000                     &
+                c_Q6                             &
+                file q6.dat
+
+# One frame every 1,000 steps gives 1,201 frames, matching the FCC run.
+# Scaled coordinates remain convenient while the NPT box changes size.
+dump            trajectory all custom 1000      &
+                trajectory.lammpstrj             &
+                id type xs ys zs
+dump_modify     trajectory sort id pbc yes
+
+# ============================================================
+# Equilibrate the HCP solid: 200,000 steps
+# ============================================================
+
+fix             equil all npt                   &
+                temp 1.0 1.0 1.0                &
+                iso  8.0 8.0 10.0
+run             ${equil_steps}
+unfix           equil
+
+write_restart   hcp_equilibrated.restart
+write_data      hcp_equilibrated.data
+
+# ============================================================
+# Gentle decompression: 1,000,000 steps
+# ============================================================
+
+# The target pressure changes continuously over 5,000 reduced
+# time units. This is the same slow ramp used for the FCC crystal.
+fix             melt all npt                    &
+                temp 1.0 1.0 1.0                &
+                iso  8.0 1.0 10.0
+run             ${ramp_steps}
+unfix           melt
+
+write_restart   hcp_after_decompression.restart
+write_data      hcp_after_decompression.data
+
+print "HCP pressure-driven melting run finished."

@@ -1,0 +1,375 @@
+# ============================================================
+# Lennard-Jones FCC crystal
+# Pressure-driven melting by decompression
+#
+# Protocol:
+#   1. Create FCC crystal at initial rho* = 1.2
+#   2. Minimize the crystal
+#   3. Initialize velocities at T* = 1.0
+#   4. Equilibrate at T* = 1.0 and P* = 8.0
+#   5. Slowly decrease pressure from P* = 8.0 to P* = 1.0
+#   6. Monitor density, energy and Q6 during melting
+#
+# Reduced Lennard-Jones units:
+#   epsilon = 1
+#   sigma   = 1
+#   mass    = 1
+# ============================================================
+
+
+# ============================================================
+# 1. INITIALIZATION
+# ============================================================
+
+clear
+
+units           lj
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+timestep        0.005
+
+
+# ============================================================
+# 2. INTERACTION STYLE
+# ============================================================
+
+pair_style      lj/cut 2.5
+
+
+# ============================================================
+# 3. CREATE FCC CRYSTAL
+# ============================================================
+
+# For "units lj":
+#
+# lattice fcc 1.2
+#
+# means an FCC lattice with reduced number density rho* = 1.2.
+
+lattice         fcc 1.2                  &
+                orient x 1 0 0           &
+                orient y 0 1 0           &
+                orient z 0 0 1
+
+
+# Number of conventional FCC unit cells in each direction
+
+variable        nx equal 10
+variable        ny equal 10
+variable        nz equal 10
+
+
+# Create simulation box
+
+region          box block                &
+                0 ${nx}                  &
+                0 ${ny}                  &
+                0 ${nz}                  &
+                units lattice
+
+create_box      1 box
+
+create_atoms    1 box
+
+
+# ============================================================
+# 4. MASS AND LJ PARAMETERS
+# ============================================================
+
+# These commands MUST come after create_box
+
+mass            1 1.0
+
+# pair_coeff:
+# atom types = 1 1
+# epsilon = 1.0
+# sigma   = 1.0
+
+pair_coeff      1 1 1.0 1.0
+
+
+# ============================================================
+# 5. NEIGHBOR LIST SETTINGS
+# ============================================================
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+
+# ============================================================
+# 6. ENERGY MINIMIZATION
+# ============================================================
+
+thermo          100
+
+thermo_style    custom                  &
+                step                    &
+                atoms                   &
+                temp                    &
+                press                   &
+                pe                      &
+                etotal                  &
+                vol                     &
+                density
+
+
+min_style       cg
+
+minimize        1.0e-8 1.0e-10 10000 100000
+
+
+# Start MD timestep numbering from zero after minimization
+
+reset_timestep  0
+
+
+# ============================================================
+# 7. INITIAL VELOCITIES
+# ============================================================
+
+# Generate velocities corresponding to T* = 1.0
+#
+# Random seed = 10917
+
+velocity        all create 1.0 10917     &
+                mom yes                  &
+                rot no                   &
+                dist gaussian
+
+
+# ============================================================
+# 8. STRUCTURAL OBSERVABLES
+# ============================================================
+
+# Per-atom potential energy
+
+compute         poteng all pe/atom
+
+
+# Steinhardt Q6 bond-orientational order parameter
+#
+# Use the 12 nearest neighbors.
+#
+# For a well ordered FCC structure Q6 should be relatively high.
+# In the liquid Q6 should decrease significantly.
+
+compute         orient all orientorder/atom     &
+                degrees 1 6                     &
+                nnn 12                          &
+                cutoff 2.0
+
+
+# Average Q6 over all atoms
+
+compute         Q6 all reduce ave c_orient[1]
+
+
+# ============================================================
+# 9. VARIABLES FOR OUTPUT
+# ============================================================
+
+variable        temperature equal temp
+variable        pressure    equal press
+variable        potential   equal pe
+variable        volume      equal vol
+variable        rho         equal density
+
+
+# ============================================================
+# 10. THERMODYNAMIC OUTPUT
+# ============================================================
+
+thermo          1000
+
+thermo_style    custom                  &
+                step                    &
+                temp                    &
+                press                   &
+                pe                      &
+                ke                      &
+                etotal                  &
+                vol                     &
+                density                 &
+                c_Q6
+
+
+# ============================================================
+# 11. WRITE OBSERVABLES TO FILE
+# ============================================================
+
+# Average over 10 measurements:
+#
+# sample every 100 timesteps
+# write every 1000 timesteps
+#
+# Columns in melting_observables.dat:
+#
+# timestep
+# T*
+# P*
+# PE
+# volume
+# density
+# Q6
+
+fix             observables all ave/time        &
+                100 10 1000                     &
+                v_temperature                    &
+                v_pressure                       &
+                v_potential                      &
+                v_volume                         &
+                v_rho                            &
+                c_Q6                             &
+                file melting_observables.dat
+
+
+# ============================================================
+# 12. TRAJECTORY OUTPUT
+# ============================================================
+
+# Save one configuration every 1000 timesteps.
+#
+# The trajectory contains:
+#   atom ID
+#   atom type
+#   position
+#   velocity
+#   per-atom potential energy
+#   per-atom Q6
+
+dump            trajectory all custom 1000      &
+                melting.lammpstrj                &
+                id                               &
+                type                             &
+                x y z                            &
+                vx vy vz                         &
+                c_poteng                         &
+                c_orient[1]
+
+dump_modify     trajectory sort id pbc yes
+
+
+# ============================================================
+# 13. EQUILIBRATION OF FCC CRYSTAL
+# ============================================================
+
+print "======================================================"
+print "FCC EQUILIBRATION"
+print "T* = 1.0"
+print "P* = 8.0"
+print "======================================================"
+
+
+# NPT simulation:
+#
+# Temperature:
+#     T* = 1.0
+#
+# Pressure:
+#     P* = 8.0
+#
+# Tdamp = 1.0
+# Pdamp = 10.0
+#
+# "iso" means that the box changes isotropically.
+
+fix             equil all npt                   &
+                temp 1.0 1.0 1.0                &
+                iso  8.0 8.0 10.0
+
+
+# Equilibration:
+#
+# 200000 steps * 0.005 = 1000 LJ time units
+
+run             200000
+
+
+# Remove equilibration thermostat/barostat
+
+unfix           equil
+
+
+# ============================================================
+# 14. SAVE EQUILIBRATED FCC CRYSTAL
+# ============================================================
+
+# Binary LAMMPS restart file
+
+write_restart   fcc_equilibrated.restart
+
+
+# Human-readable LAMMPS data file
+
+write_data      fcc_equilibrated.data
+
+
+print "======================================================"
+print "FCC EQUILIBRATION FINISHED"
+print "Beginning pressure decrease"
+print "P* = 8.0 -> 1.0"
+print "T* remains 1.0"
+print "======================================================"
+
+
+# ============================================================
+# 15. PRESSURE-DRIVEN MELTING
+# ============================================================
+
+# Slowly decrease pressure while holding T* = 1.0.
+#
+# Starting pressure:
+#
+#       P* = 8.0
+#
+# Final pressure:
+#
+#       P* = 1.0
+#
+# LAMMPS continuously ramps the target pressure between
+# these values during the following run.
+#
+# The simulation box is allowed to expand.
+# Therefore the density will naturally decrease.
+
+fix             melt all npt                    &
+                temp 1.0 1.0 1.0                &
+                iso  8.0 1.0 10.0
+
+
+# Main decompression run:
+#
+# 1000000 steps * 0.005
+#
+# = 5000 LJ time units
+
+run             1000000
+
+
+# ============================================================
+# 16. END MELTING SIMULATION
+# ============================================================
+
+unfix           melt
+
+
+# ============================================================
+# 17. SAVE FINAL CONFIGURATION
+# ============================================================
+
+write_restart   fcc_after_decompression.restart
+
+write_data      fcc_after_decompression.data
+
+
+# ============================================================
+# 18. FINISH
+# ============================================================
+
+print "======================================================"
+print "SIMULATION FINISHED"
+print "Final configuration written to:"
+print "fcc_after_decompression.data"
+print "======================================================"
